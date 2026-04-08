@@ -9,7 +9,7 @@ from sentence_transformers import SentenceTransformer
 class PaperVectorDB:
     """Vector database for storing and searching paper embeddings."""
 
-    def __init__(self, db_path: str = "vector_db"):
+    def __init__(self, db_path: str = "data/vector_db"):
         """
         Initialize the vector database.
 

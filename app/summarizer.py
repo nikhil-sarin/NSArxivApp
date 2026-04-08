@@ -10,7 +10,7 @@ from pathlib import Path
 class PaperSummarizer:
     """Summarize papers using Ollama with local models."""
 
-    DEFAULT_MODEL = "qwen"
+    DEFAULT_MODEL = "llama3.1:latest"
     DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 
     def __init__(self, model: Optional[str] = None, ollama_host: Optional[str] = None):
@@ -26,13 +26,14 @@ class PaperSummarizer:
             "OLLAMA_HOST", self.DEFAULT_OLLAMA_HOST
         )
 
-    def summarize(self, text: str, max_length: int = 300) -> str:
+    def summarize(self, text: str, max_length: int = 300, detailed: bool = False) -> str:
         """
         Generate a summary of the given text using Ollama.
 
         Args:
             text: The full text to summarize.
-            max_length: Maximum length of the summary.
+            max_length: Maximum length of the summary in words.
+            detailed: If True, produce a longer structured summary.
 
         Returns:
             Summary string.
@@ -40,18 +41,32 @@ class PaperSummarizer:
         if not text or len(text) < 100:
             return text[:max_length] if text else ""
 
-        return self._summarize_with_ollama(text, max_length)
+        return self._summarize_with_ollama(text, max_length, detailed)
 
-    def _summarize_with_ollama(self, text: str, max_length: int = 300) -> str:
+    def _summarize_with_ollama(self, text: str, max_length: int = 300, detailed: bool = False) -> str:
         """Summarize using Ollama local model."""
-        # Truncate text to fit in context window
-        max_tokens = 8000
+        max_tokens = 12000 if detailed else 8000
         if len(text) > max_tokens:
             text = text[:max_tokens] + "...[truncated]"
 
         url = f"{self.ollama_host}/api/generate"
 
-        prompt = f"""You are a research assistant. Summarize this academic paper concisely, focusing on:
+        if detailed:
+            prompt = f"""You are a research assistant. Write a detailed technical summary of this academic paper covering:
+1. Main contribution and novelty
+2. Methodology and approach
+3. Key results and findings
+4. Limitations or open questions
+5. Relevance and potential impact
+
+Aim for {max_length} words. Be precise and technical.
+
+Paper text:
+{text}
+
+Detailed summary:"""
+        else:
+            prompt = f"""You are a research assistant. Summarize this academic paper concisely, focusing on:
 1. Main contribution/innovation
 2. Key methodology
 3. Important findings
@@ -63,6 +78,7 @@ Paper text:
 
 Summary:"""
 
+        num_predict = max_length * 2 if detailed else max_length
         try:
             response = requests.post(
                 url,
@@ -70,9 +86,9 @@ Summary:"""
                     "model": self.model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"num_predict": max_length},
+                    "options": {"num_predict": num_predict},
                 },
-                timeout=120,
+                timeout=300 if detailed else 120,
             )
             response.raise_for_status()
             result = response.json()
