@@ -11,12 +11,16 @@ import time
 from app.arxiv_client import ArxivClient
 from app.pdf_extractor import PDFExtractor
 from app.summarizer import PaperSummarizer
+from dotenv import load_dotenv
 from app.vector_db import PaperVectorDB
 from app.knowledge_graph import KnowledgeGraph
 
 
 def init_session_state():
     """Initialize session state variables."""
+    # Load environment variables
+    load_dotenv()
+
     if "papers" not in st.session_state:
         st.session_state.papers = []
     if "knowledge_graph" not in st.session_state:

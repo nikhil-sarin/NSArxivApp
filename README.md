@@ -24,10 +24,17 @@ cd NSArxivApp
 pip install -r requirements.txt
 ```
 
-3. (Optional) Set up OpenAI API key for better summaries:
+3. Install Ollama and pull a model:
+```bash
+# Install Ollama from https://ollama.com
+# Then pull a model (llama3.2 recommended):
+ollama pull llama3.2
+```
+
+4. (Optional) Configure environment variables:
 ```bash
 cp .env.example .env
-# Edit .env and add your API key
+# Edit .env to customize model and host
 ```
 
 ## Usage
@@ -42,7 +49,7 @@ The app will open in your browser at `http://localhost:8501`.
 ## How It Works
 
 1. **Search**: Enter keywords or select categories to find papers
-2. **Summarize**: Papers are automatically summarized (uses OpenAI if configured, otherwise falls back to extracting abstract/intro)
+2. **Summarize**: Papers are automatically summarized using Ollama local LLM (e.g., llama3.2)
 3. **Store**: Papers are stored in a vector database for semantic search
 4. **Connect**: Knowledge graph tracks relationships between papers
 5. **Explore**: Search semantically and visualize connections

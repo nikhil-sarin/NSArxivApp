@@ -1,28 +1,34 @@
-"""LLM-based paper summarization module."""
+"""LLM-based paper summarization module using Ollama."""
 
 import os
+import json
+import requests
 from typing import Optional
 from pathlib import Path
-import requests
 
 
 class PaperSummarizer:
-    """Summarize papers using LLM."""
+    """Summarize papers using Ollama with local models."""
 
-    def __init__(self, use_api: bool = False, api_key: Optional[str] = None):
+    DEFAULT_MODEL = "llama3.2"
+    DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+
+    def __init__(self, model: Optional[str] = None, ollama_host: Optional[str] = None):
         """
-        Initialize summarizer.
+        Initialize summarizer with Ollama.
 
         Args:
-            use_api: If True, use OpenAI API. If False, use a local model or fallback.
-            api_key: OpenAI API key if using API.
+            model: Ollama model to use (default: llama3.2).
+            ollama_host: Ollama server URL (default: http://localhost:11434).
         """
-        self.use_api = use_api
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.model = model or os.getenv("OLLAMA_MODEL", self.DEFAULT_MODEL)
+        self.ollama_host = ollama_host or os.getenv(
+            "OLLAMA_HOST", self.DEFAULT_OLLAMA_HOST
+        )
 
     def summarize(self, text: str, max_length: int = 300) -> str:
         """
-        Generate a summary of the given text.
+        Generate a summary of the given text using Ollama.
 
         Args:
             text: The full text to summarize.
@@ -34,49 +40,54 @@ class PaperSummarizer:
         if not text or len(text) < 100:
             return text[:max_length] if text else ""
 
-        # Use API if configured
-        if self.use_api and self.api_key:
-            return self._summarize_with_api(text, max_length)
+        return self._summarize_with_ollama(text, max_length)
 
-        # Fallback: Use the abstract/summary if available
-        if "\n\n" in text:
-            first_section = text.split("\n\n")[0][:max_length]
-            return first_section.strip()
-
-        # Last resort: truncate
-        return text[:max_length] + "..." if len(text) > max_length else text
-
-    def _summarize_with_api(self, text: str, max_length: int = 300) -> str:
-        """Summarize using OpenAI API."""
-        # Truncate text to fit in token limit
-        max_tokens = 4000
+    def _summarize_with_ollama(self, text: str, max_length: int = 300) -> str:
+        """Summarize using Ollama local model."""
+        # Truncate text to fit in context window
+        max_tokens = 8000
         if len(text) > max_tokens:
-            text = text[:max_tokens] + "..."
+            text = text[:max_tokens] + "...[truncated]"
+
+        url = f"{self.ollama_host}/api/generate"
+
+        prompt = f"""You are a research assistant. Summarize this academic paper concisely, focusing on:
+1. Main contribution/innovation
+2. Key methodology
+3. Important findings
+
+Keep it under {max_length} words. Be precise and technical where appropriate.
+
+Paper text:
+{text}
+
+Summary:"""
 
         try:
             response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                url,
                 json={
-                    "model": "gpt-3.5-turbo",
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are a research assistant. Provide concise, accurate summaries of academic papers. Focus on the main contribution, methodology, and key findings.",
-                        },
-                        {
-                            "role": "user",
-                            "content": f"Summarize this paper in {max_length} words or less:\n\n{text}",
-                        },
-                    ],
-                    "max_tokens": max_length,
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"num_predict": max_length},
                 },
+                timeout=120,
             )
             response.raise_for_status()
             result = response.json()
-            return result["choices"][0]["message"]["content"].strip()
+            summary = result.get("response", "").strip()
+
+            # Clean up the summary
+            summary = summary.replace("Summary:", "").strip()
+            return summary
+
+        except requests.exceptions.ConnectionError:
+            print(f"Could not connect to Ollama at {self.ollama_host}")
+            print("Make sure Ollama is running: ollama serve")
+            return self._fallback_summarize(text, max_length)
         except Exception as e:
-            print(f"API summarization failed: {e}. Using fallback.")
+            print(f"Ollama summarization failed: {e}. Using fallback.")
             return self._fallback_summarize(text, max_length)
 
     def _fallback_summarize(self, text: str, max_length: int = 300) -> str:
