@@ -10,7 +10,7 @@ from pathlib import Path
 class PaperSummarizer:
     """Summarize papers using Ollama with local models."""
 
-    DEFAULT_MODEL = "llama3.2"
+    DEFAULT_MODEL = "qwen"
     DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 
     def __init__(self, model: Optional[str] = None, ollama_host: Optional[str] = None):

@@ -24,11 +24,13 @@ cd NSArxivApp
 pip install -r requirements.txt
 ```
 
-3. Install Ollama and pull a model:
+3. Make sure Ollama is running with qwen:
 ```bash
-# Install Ollama from https://ollama.com
-# Then pull a model (llama3.2 recommended):
-ollama pull llama3.2
+# Check if qwen is available:
+ollama list
+
+# If not, pull it (only if needed):
+ollama pull qwen
 ```
 
 4. (Optional) Configure environment variables:
