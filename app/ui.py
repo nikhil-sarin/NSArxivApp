@@ -296,6 +296,84 @@ def render_knowledge_graph():
         col3.metric("Avg connections", f"{len(edges)/len(nodes):.1f}" if nodes else "0")
 
 
+def _get_paper_text(pid: str, paper: Dict, n_pages: int = 8) -> str:
+    """Get extracted text for a paper, downloading PDF if needed."""
+    pdf_path = st.session_state.arxiv.get_pdf_path_by_id(pid)
+    if pdf_path is None or not pdf_path.exists():
+        import arxiv as _arxiv
+        result = next(st.session_state.arxiv.client.results(
+            _arxiv.Search(query=f"id:{pid}", max_results=1)
+        ), None)
+        if result is None:
+            return ""
+        pdf_path = st.session_state.arxiv.get_pdf_path(result)
+    return st.session_state.pdf_extractor.extract_first_n_pages(pdf_path, n_pages=n_pages)
+
+
+def _chat_with_paper(pid: str, paper: Dict, user_message: str) -> str:
+    """Send a message to the configured LLM provider with the paper in context."""
+    chat_key = f"chat_text_{pid}"
+    if chat_key not in st.session_state:
+        with st.spinner("Loading paper text..."):
+            st.session_state[chat_key] = _get_paper_text(pid, paper, n_pages=8)
+
+    paper_text = st.session_state[chat_key]
+    if len(paper_text) > 30000:
+        paper_text = paper_text[:30000] + "\n...[truncated]"
+
+    system_prompt = (
+        f"You are a research assistant. You have read the following academic paper.\n\n"
+        f"Title: {paper.get('title', '')}\n"
+        f"Authors: {_authors_str(paper)}\n"
+        f"Published: {paper.get('published', '')}\n\n"
+        f"Paper text:\n{paper_text}\n\n"
+        f"Answer questions about this paper accurately and concisely. "
+        f"If something is not covered in the text, say so."
+    )
+
+    history_key = f"chat_history_{pid}"
+    history = st.session_state.get(history_key, [])
+    messages = history + [{"role": "user", "content": user_message}]
+
+    try:
+        reply = st.session_state.summarizer._dispatch_chat(system_prompt, messages)
+    except Exception as e:
+        reply = f"Error: {e}"
+
+    history.append({"role": "user", "content": user_message})
+    history.append({"role": "assistant", "content": reply})
+    st.session_state[history_key] = history
+
+    return reply
+
+
+def render_paper_chat(pid: str, paper: Dict):
+    """Render an inline chat panel for a paper."""
+    history_key = f"chat_history_{pid}"
+    history = st.session_state.get(history_key, [])
+
+    st.markdown("**Chat with this paper**")
+
+    # Show conversation history
+    for msg in history:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    # Input
+    user_input = st.chat_input("Ask a question about this paper...", key=f"chat_input_{pid}")
+    if user_input:
+        with st.chat_message("user"):
+            st.write(user_input)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                reply = _chat_with_paper(pid, paper, user_input)
+            st.write(reply)
+
+    if history and st.button("Clear chat", key=f"clear_chat_{pid}"):
+        st.session_state[history_key] = []
+        st.session_state.pop(f"chat_text_{pid}", None)
+
+
 def _regenerate_summary(paper: Dict, detailed: bool = False):
     """Re-summarize a single paper and update all stores."""
     pid = paper.get("arxiv_id", paper.get("id", ""))
@@ -337,9 +415,10 @@ def render_papers_list():
     col1.metric("Total Papers", len(df))
     col2.metric("Categories", df["categories"].explode().nunique() if "categories" in df.columns else 0)
 
-    # Regenerate all button
+    # Bulk summary buttons
     detailed_all = col3.checkbox("Detailed mode", key="regen_detailed_all")
-    if col3.button("Regenerate all summaries"):
+    btn_col1, btn_col2 = col3.columns(2)
+    if btn_col1.button("Regenerate all"):
         progress = st.progress(0, text="Regenerating summaries...")
         all_papers = paper_store.load_all_papers()
         for i, p in enumerate(all_papers):
@@ -348,6 +427,18 @@ def render_papers_list():
         progress.empty()
         st.session_state.papers = paper_store.load_all_papers()
         st.success("All summaries regenerated.")
+    if btn_col2.button("Fill missing"):
+        missing = [p for p in paper_store.load_all_papers() if not p.get("summary", "").strip()]
+        if not missing:
+            st.info("No missing summaries.")
+        else:
+            progress = st.progress(0, text="Filling missing summaries...")
+            for i, p in enumerate(missing):
+                progress.progress((i + 1) / len(missing), text=f"Summarizing {i+1}/{len(missing)}: {p.get('title','')[:50]}...")
+                _regenerate_summary(p, detailed=detailed_all)
+            progress.empty()
+            st.session_state.papers = paper_store.load_all_papers()
+            st.success(f"Filled {len(missing)} missing summaries.")
 
     st.markdown("---")
 
@@ -370,6 +461,8 @@ def render_papers_list():
                 st.markdown("**Summary**")
                 st.write(paper.get("summary", "No summary available."))
             with col2:
+                if pid:
+                    st.markdown(f"[View on ArXiv](https://arxiv.org/abs/{pid})")
                 detailed = st.checkbox("Detailed", key=f"det_{pid}")
                 if st.button("Regenerate summary", key=f"regen_{pid}"):
                     with st.spinner("Summarizing..."):
@@ -377,6 +470,12 @@ def render_papers_list():
                     if new_summary:
                         paper["summary"] = new_summary
                         st.success("Done.")
+                show_chat_key = f"show_chat_{pid}"
+                if st.button("Chat with paper", key=f"chat_btn_{pid}"):
+                    st.session_state[show_chat_key] = not st.session_state.get(show_chat_key, False)
+            if st.session_state.get(f"show_chat_{pid}", False):
+                st.markdown("---")
+                render_paper_chat(pid, paper)
 
     st.markdown("---")
     data_dir = Path("data").resolve()

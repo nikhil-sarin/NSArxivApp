@@ -1,107 +1,193 @@
 # NSArxivApp - ArXiv Paper Wiki
 
-A full-stack application to discover, summarize, and explore connections between ArXiv research papers. Build a personal knowledge base of academic papers with semantic search and visual connections.
+A full-stack application to discover, summarize, and explore connections between ArXiv research papers. Build a personal knowledge base of academic papers with semantic search, visual connections, and an AI chat interface.
 
 ## Features
 
-- **Search ArXiv**: Find papers by keywords and categories
-- **Auto-summarization**: Extract and summarize paper content using local LLMs
-- **Vector Search**: Semantic search powered by sentence transformers
-- **Knowledge Graph**: Visualize connections between papers by category and authors
-- **PDF Downloads**: Save papers locally for offline reading
-- **Cross-platform**: Runs on Linux, macOS, and Windows via browser
+- **Search ArXiv**: Find papers by keywords, categories, and date range (today / last 7 days / last 30 days)
+- **Auto-summarization**: Extract and summarize paper content using a configurable LLM
+- **Chat with papers**: Ask questions about any paper in your library — the LLM reads the PDF and answers in context
+- **Vector search**: Semantic search powered by sentence transformers
+- **Knowledge graph**: Visualize connections between papers by category and authors
+- **Persistent library**: Papers, summaries, and metadata are saved locally and reload automatically on restart
+- **Scheduled fetch**: Run automated daily searches via cron or macOS launchd, even when the app is closed
+- **Multi-provider LLM**: Switch between Ollama (local), Gemini, Anthropic, and OpenAI via a single env var
+- **Remote access**: Run on a workstation, access from anywhere via Tailscale
 
 ## Installation
 
-### Quick Start (macOS)
+### Quick Start
 
-1. **Install Ollama** (downloads a local AI model runner):
-```bash
-# Using Homebrew (recommended):
-brew install ollama
-
-# Or download from https://ollama.com and double-click the installer
-```
-
-2. **Pull a model** (choose one):
-```bash
-# Qwen (good balance of quality and speed):
-ollama pull qwen
-
-# Smaller/faster option:
-ollama pull llama3.2
-
-# Larger/more capable (slower, needs more RAM):
-ollama pull qwen:7b
-```
-
-3. **Clone and set up the app**:
 ```bash
 git clone git@github.com:nikhil-sarin/NSArxivApp.git
 cd NSArxivApp
 pip install -r requirements.txt
 ```
 
-4. **Start Ollama** (run in background):
+Copy and configure the environment file:
 ```bash
-ollama serve
+cp .env.example .env   # or edit .env directly
 ```
 
-5. **Run the app**:
+Run the app:
 ```bash
 streamlit run main.py
 ```
 
-### Alternative: Using conda/mamba
+Open `http://localhost:8501` in your browser.
+
+### Using conda/mamba
 
 ```bash
-# Create environment
 conda create -n arxiv-app python=3.10
 conda activate arxiv-app
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-## Usage
+---
 
-Once running, open your browser to `http://localhost:8501` and:
+## LLM Configuration
 
-1. **Search**: Enter keywords (e.g., "transformer attention") or select categories
-2. **Browse**: Papers are auto-summarized and stored for later
-3. **Explore**: Use semantic search or view the knowledge graph of connections
+The app supports multiple LLM providers. Set `SUMMARIZER_PROVIDER` in `.env` — no code changes needed. The provider is read live, so you can switch without restarting.
 
-## System Requirements
+### Option 1: Ollama (local, default)
 
-- **macOS**: 8GB+ RAM recommended (16GB for larger models)
-- **Linux/Windows**: 8GB+ RAM recommended
-- **Storage**: ~5GB for the model + paper PDFs
-- **Python**: 3.8+
-
-## Troubleshooting
-
-**Ollama not starting?**
+Install Ollama and pull a model:
 ```bash
-# Check if Ollama is running:
-ps aux | grep ollama
-
-# Restart:
-brew services restart ollama
+brew install ollama          # macOS
+ollama pull llama3.1         # recommended
+ollama serve                 # start the server
 ```
 
-**Model too slow?**
-Try a smaller model: `ollama pull qwen:0.5b` or `llama3.2`
+`.env`:
+```
+SUMMARIZER_PROVIDER=ollama
+OLLAMA_MODEL=llama3.1:latest
+OLLAMA_HOST=http://localhost:11434
+```
 
-**Out of memory?**
-Close other applications or use a smaller model.
+**Recommended models:**
+| Model | RAM needed | Speed | Quality |
+|---|---|---|---|
+| `llama3.1:latest` | ~8 GB | medium | good |
+| `gemma4:12b` | ~12 GB | medium | very good |
+| `gemma4:31b` | ~32 GB | slow | excellent |
 
-## How It Works
+### Option 2: Google Gemini (recommended for cloud)
 
-1. **Search**: Enter keywords or select categories to find papers
-2. **Summarize**: Papers are automatically summarized using Ollama local LLM (e.g., llama3.2)
-3. **Store**: Papers are stored in a vector database for semantic search
-4. **Connect**: Knowledge graph tracks relationships between papers
-5. **Explore**: Search semantically and visualize connections
+Get an API key at [aistudio.google.com](https://aistudio.google.com).
+
+`.env`:
+```
+SUMMARIZER_PROVIDER=gemini
+GEMINI_API_KEY=your-key-here
+LLM_MODEL=gemini-2.0-flash          # optional, this is the default
+```
+
+Gemini 2.0 Flash has a 1M token context window — entire papers fit without truncation.
+
+### Option 3: Anthropic Claude
+
+`.env`:
+```
+SUMMARIZER_PROVIDER=anthropic
+ANTHROPIC_API_KEY=your-key-here
+LLM_MODEL=claude-3-5-haiku-20241022  # optional
+```
+
+### Option 4: OpenAI
+
+`.env`:
+```
+SUMMARIZER_PROVIDER=openai
+OPENAI_API_KEY=your-key-here
+LLM_MODEL=gpt-4o-mini                # optional
+```
+
+### Remote Ollama (workstation offload)
+
+Run Ollama on a more powerful machine and point the app at it:
+```
+OLLAMA_HOST=http://<workstation-ip>:11434
+```
+Works over a local network or Tailscale VPN.
+
+---
+
+## Remote Access via Tailscale
+
+Run the app on your workstation and access it from anywhere (laptop, tablet, etc.) without port forwarding.
+
+1. Install Tailscale on both machines: [tailscale.com/download](https://tailscale.com/download) or `brew install tailscale`
+2. Sign in on both with the same account: `sudo tailscale up`
+3. On your workstation, start the app:
+   ```bash
+   streamlit run main.py
+   ```
+4. On any other device, browse to:
+   ```
+   http://<workstation-tailscale-ip>:8501
+   ```
+   Find your Tailscale IP in the Tailscale menu bar app or with `tailscale ip`.
+
+To also offload LLM inference to the workstation, set in `.env`:
+```
+OLLAMA_HOST=http://<workstation-tailscale-ip>:11434
+```
+
+---
+
+## Scheduled Daily Fetch
+
+Automatically fetch and summarize new papers on a schedule, even when the UI is closed.
+
+### Manual CLI
+
+```bash
+python -m app.fetch_job \
+  --query "neutron star kilonova" \
+  --categories astro-ph.HE gr-qc \
+  --max-results 20 \
+  --days-back 1
+```
+
+### cron
+
+Add to your crontab (`crontab -e`):
+```
+0 7 * * * cd /path/to/NSArxivApp && python -m app.fetch_job --query "neutron star" --categories astro-ph.HE >> data/fetch.log 2>&1
+```
+
+### macOS launchd
+
+Use the **Schedule** tab in the app UI to generate and install a launchd plist automatically. It runs the fetch job daily at a time you choose and logs to `data/fetch.log`.
+
+---
+
+## Usage
+
+1. **Search**: Enter keywords and/or select categories in the sidebar, optionally filter by date, then click **Search**
+2. **Library**: All saved papers appear in the Library tab — filter by category, regenerate summaries, or chat with individual papers
+3. **Chat with a paper**: Click **Chat with paper** inside any library entry to ask questions — the LLM reads the PDF and answers in context
+4. **Semantic search**: Describe what you're looking for in plain language in the Semantic Search tab
+5. **Knowledge graph**: Visualize category and author connections in the Knowledge Graph tab
+6. **Schedule**: Set up automated daily fetching in the Schedule tab
+
+---
+
+## Data Storage
+
+All data is stored locally under `data/` in the app directory:
+
+```
+data/
+├── papers.json      # paper metadata and summaries (persistent across restarts)
+├── papers/          # downloaded PDFs
+├── vector_db/       # ChromaDB embeddings
+└── fetch.log        # scheduled job logs
+```
+
+---
 
 ## Architecture
 
@@ -109,32 +195,40 @@ Close other applications or use a smaller model.
 app/
 ├── arxiv_client.py    # ArXiv API client
 ├── pdf_extractor.py   # PDF text extraction
-├── summarizer.py      # LLM-based summarization
+├── summarizer.py      # Multi-provider LLM summarization and chat
 ├── vector_db.py       # ChromaDB vector storage
 ├── knowledge_graph.py # NetworkX graph for connections
-└── ui.py             # Streamlit frontend
+├── paper_store.py     # JSON persistence layer
+├── fetch_job.py       # CLI script for scheduled fetching
+└── ui.py              # Streamlit frontend
 
-main.py               # Entry point
-requirements.txt      # Dependencies
+main.py                # Entry point
+.env                   # LLM provider config (not committed)
+.streamlit/config.toml # Streamlit settings
 ```
 
-## Dependencies
+## System Requirements
 
-- `arxiv` - ArXiv API client
-- `pypdf` - PDF text extraction
-- `streamlit` - Web UI framework
-- `chromadb` - Vector database
-- `sentence-transformers` - Embedding model
-- `networkx` - Knowledge graph
-- `plotly` - Graph visualization
+- **Python**: 3.10+
+- **RAM**: 8 GB minimum; 16 GB+ for large local models
+- **Storage**: ~5 GB for a local model + paper PDFs
+- **Ollama** (optional): only needed for local inference
 
-## Platform Support
+## Troubleshooting
 
-✅ Linux  
-✅ macOS  
-✅ Windows
+**Ollama not connecting?**
+```bash
+ollama serve          # start the server
+ollama list           # check available models
+```
 
-The app runs entirely in your browser and requires Python 3.8+.
+**Wrong model name?** The model must be listed in `ollama list`. Update `OLLAMA_MODEL` in `.env` to match exactly.
+
+**Summaries empty after fetch?** Use the **Fill missing** button in the Library tab to generate summaries for any papers that were stored without one.
+
+**App slow to start?** The sentence-transformer embedding model (~90 MB) loads on first run and is cached — subsequent reruns are fast.
+
+**Module warnings on startup?** These are suppressed by `.streamlit/config.toml` (`fileWatcherType = poll`). If you see them, make sure the config file exists.
 
 ## License
 
