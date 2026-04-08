@@ -5,7 +5,7 @@ A full-stack application to discover, summarize, and explore connections between
 ## Features
 
 - **Search ArXiv**: Find papers by keywords and categories
-- **Auto-summarization**: Extract and summarize paper content using LLMs
+- **Auto-summarization**: Extract and summarize paper content using local LLMs
 - **Vector Search**: Semantic search powered by sentence transformers
 - **Knowledge Graph**: Visualize connections between papers by category and authors
 - **PDF Downloads**: Save papers locally for offline reading
@@ -13,40 +13,87 @@ A full-stack application to discover, summarize, and explore connections between
 
 ## Installation
 
-1. Clone the repository:
+### Quick Start (macOS)
+
+1. **Install Ollama** (downloads a local AI model runner):
+```bash
+# Using Homebrew (recommended):
+brew install ollama
+
+# Or download from https://ollama.com and double-click the installer
+```
+
+2. **Pull a model** (choose one):
+```bash
+# Qwen (good balance of quality and speed):
+ollama pull qwen
+
+# Smaller/faster option:
+ollama pull llama3.2
+
+# Larger/more capable (slower, needs more RAM):
+ollama pull qwen:7b
+```
+
+3. **Clone and set up the app**:
 ```bash
 git clone git@github.com:nikhil-sarin/NSArxivApp.git
 cd NSArxivApp
-```
-
-2. Install dependencies:
-```bash
 pip install -r requirements.txt
 ```
 
-3. Make sure Ollama is running with qwen:
+4. **Start Ollama** (run in background):
 ```bash
-# Check if qwen is available:
-ollama list
-
-# If not, pull it (only if needed):
-ollama pull qwen
+ollama serve
 ```
 
-4. (Optional) Configure environment variables:
-```bash
-cp .env.example .env
-# Edit .env to customize model and host
-```
-
-## Usage
-
-Run the Streamlit app:
+5. **Run the app**:
 ```bash
 streamlit run main.py
 ```
 
-The app will open in your browser at `http://localhost:8501`.
+### Alternative: Using conda/mamba
+
+```bash
+# Create environment
+conda create -n arxiv-app python=3.10
+conda activate arxiv-app
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+## Usage
+
+Once running, open your browser to `http://localhost:8501` and:
+
+1. **Search**: Enter keywords (e.g., "transformer attention") or select categories
+2. **Browse**: Papers are auto-summarized and stored for later
+3. **Explore**: Use semantic search or view the knowledge graph of connections
+
+## System Requirements
+
+- **macOS**: 8GB+ RAM recommended (16GB for larger models)
+- **Linux/Windows**: 8GB+ RAM recommended
+- **Storage**: ~5GB for the model + paper PDFs
+- **Python**: 3.8+
+
+## Troubleshooting
+
+**Ollama not starting?**
+```bash
+# Check if Ollama is running:
+ps aux | grep ollama
+
+# Restart:
+brew services restart ollama
+```
+
+**Model too slow?**
+Try a smaller model: `ollama pull qwen:0.5b` or `llama3.2`
+
+**Out of memory?**
+Close other applications or use a smaller model.
 
 ## How It Works
 
