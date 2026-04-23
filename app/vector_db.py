@@ -98,6 +98,36 @@ class PaperVectorDB:
 
         return papers
 
+    def get_embedding(self, paper_id: str) -> Optional[List[float]]:
+        """Return the stored embedding for a paper, or None if not found."""
+        try:
+            result = self.collection.get(ids=[paper_id], include=["embeddings"])
+            if result["embeddings"] and result["embeddings"][0] is not None:
+                return result["embeddings"][0]
+        except Exception:
+            pass
+        return None
+
+    def search_by_vector(self, vector: List[float], top_k: int = 10, exclude_id: Optional[str] = None) -> List[Dict]:
+        """Search for papers similar to a given embedding vector."""
+        results = self.collection.query(
+            query_embeddings=[vector],
+            n_results=top_k + (1 if exclude_id else 0),
+            include=["documents", "metadatas", "distances"],
+        )
+        papers = []
+        if results["ids"] and results["ids"][0]:
+            for i, pid in enumerate(results["ids"][0]):
+                if pid == exclude_id:
+                    continue
+                papers.append({
+                    "id": pid,
+                    "summary": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i],
+                    "distance": results["distances"][0][i],
+                })
+        return papers[:top_k]
+
     def search_by_metadata(
         self, category: str, top_k: int = 10
     ) -> List[Dict]:
@@ -146,6 +176,20 @@ class PaperVectorDB:
                 )
 
         return papers
+
+    def delete_paper(self, paper_id: str):
+        """Remove a paper from the vector database."""
+        try:
+            self.collection.delete(ids=[paper_id])
+        except Exception:
+            pass
+
+    def delete_paper(self, paper_id: str):
+        """Remove a paper from the vector database."""
+        try:
+            self.collection.delete(ids=[paper_id])
+        except Exception:
+            pass
 
     def paper_exists(self, paper_id: str) -> bool:
         """Check if a paper exists in the database."""

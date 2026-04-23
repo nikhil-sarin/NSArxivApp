@@ -31,6 +31,9 @@ env/
 
 # Environment variables
 .env
+.env~
+.env.*
+#.env#
 
 # Downloaded papers
 papers/

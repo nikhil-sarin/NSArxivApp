@@ -8,8 +8,25 @@ Supported providers (set via SUMMARIZER_PROVIDER env var):
 """
 
 import os
+import time
 import requests
 from typing import Optional
+
+
+def _gemini_post(url: str, api_key: str, payload: dict, timeout: int = 120) -> dict:
+    """POST to Gemini API with exponential backoff on 429."""
+    delay = 10
+    for attempt in range(5):
+        response = requests.post(url, params={"key": api_key}, json=payload, timeout=timeout)
+        if response.status_code == 429:
+            print(f"[summarizer] Gemini 429 — waiting {delay}s before retry {attempt + 1}/5")
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
+            continue
+        response.raise_for_status()
+        return response.json()
+    response.raise_for_status()  # raise after final attempt
+    return response.json()
 
 
 def _build_prompt(text: str, max_length: int, detailed: bool) -> tuple[str, str]:
@@ -117,19 +134,14 @@ class PaperSummarizer:
         api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY not set")
-        # Gemini REST API — no extra SDK needed
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
         payload = {
             "system_instruction": {"parts": [{"text": system}]},
             "contents": [{"parts": [{"text": user}]}],
             "generationConfig": {"maxOutputTokens": max_length * 2},
         }
-        response = requests.post(
-            url, params={"key": api_key}, json=payload,
-            timeout=120,
-        )
-        response.raise_for_status()
-        return response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        result = _gemini_post(url, api_key, payload)
+        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
 
     def _call_anthropic(self, system: str, user: str, max_length: int, detailed: bool) -> str:
         api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -173,20 +185,37 @@ class PaperSummarizer:
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"].strip()
 
+    def dispatch_chat_gemini(self, system: str, messages: list) -> str:
+        """Always use Gemini for chat regardless of SUMMARIZER_PROVIDER.
+        Falls back to the configured provider if GEMINI_API_KEY is not set."""
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            return self._dispatch_chat(system, messages)
+        model = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash")
+        contents = []
+        for m in messages:
+            role = "model" if m["role"] == "assistant" else "user"
+            contents.append({"role": role, "parts": [{"text": m["content"]}]})
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        result = _gemini_post(url, api_key, {"system_instruction": {"parts": [{"text": system}]}, "contents": contents})
+        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+
     def _dispatch_chat(self, system: str, messages: list) -> str:
         """Send a multi-turn chat request to the configured provider. messages = [{role, content}]"""
         provider = self._active_provider()
         self.model = self._active_model()
         if provider == "ollama":
             host = self._defaults["ollama"]["host"]
+            num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
             response = requests.post(
                 f"{host}/api/chat",
                 json={
                     "model": self.model,
                     "messages": [{"role": "system", "content": system}] + messages,
                     "stream": False,
+                    "options": {"num_ctx": num_ctx},
                 },
-                timeout=120,
+                timeout=300,
             )
             response.raise_for_status()
             return response.json()["message"]["content"].strip()
@@ -200,13 +229,8 @@ class PaperSummarizer:
                 role = "model" if m["role"] == "assistant" else "user"
                 contents.append({"role": role, "parts": [{"text": m["content"]}]})
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-            response = requests.post(
-                url, params={"key": api_key},
-                json={"system_instruction": {"parts": [{"text": system}]}, "contents": contents},
-                timeout=120,
-            )
-            response.raise_for_status()
-            return response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            result = _gemini_post(url, api_key, {"system_instruction": {"parts": [{"text": system}]}, "contents": contents})
+            return result["candidates"][0]["content"]["parts"][0]["text"].strip()
 
         elif provider == "anthropic":
             api_key = os.getenv("ANTHROPIC_API_KEY")

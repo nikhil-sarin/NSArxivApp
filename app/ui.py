@@ -1,5 +1,8 @@
 """Streamlit frontend for the paper wiki application."""
 
+import os
+import re
+import json
 import streamlit as st
 import pandas as pd
 import networkx as nx
@@ -17,6 +20,9 @@ from app.summarizer import PaperSummarizer
 from app.vector_db import PaperVectorDB
 from app.knowledge_graph import KnowledgeGraph
 from app import paper_store
+from app.tex_extractor import fetch_html_text
+from app import researcher_profile
+from app import idea_store
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -71,10 +77,20 @@ def render_header():
 
 
 def render_sidebar():
-    """Render sidebar search controls. Returns (query, categories, max_results, date_from) or Nones."""
+    """Render sidebar search controls. Returns (query, author, categories, max_results, date_from) or Nones."""
     st.sidebar.header("Search & Filters")
 
-    query = st.sidebar.text_input("Search query", placeholder="e.g., neutron star merger")
+    # Pre-populate query from profile research areas on first load
+    profile = researcher_profile.load()
+    default_query = ""
+    if not st.session_state.get("sidebar_query_initialised") and profile.get("research_areas"):
+        # Use first research area as a default hint (not auto-submitted, just pre-filled)
+        first_area = profile["research_areas"].split(",")[0].strip()
+        default_query = first_area
+        st.session_state["sidebar_query_initialised"] = True
+
+    query = st.sidebar.text_input("Search query", value=default_query, placeholder="e.g., neutron star merger")
+    author = st.sidebar.text_input("Author", placeholder="e.g., Sarin or Nikhil Sarin")
 
     st.sidebar.markdown("**Categories**")
     categories = st.sidebar.multiselect(
@@ -88,12 +104,13 @@ def render_sidebar():
         default=[],
     )
 
-    max_results = st.sidebar.slider("Max results", 5, 50, 20)
+    max_results = st.sidebar.slider("Max results", 5, 100, 20)
 
     st.sidebar.markdown("**Date filter**")
     date_option = st.sidebar.selectbox(
         "Submitted since:",
-        ["All time", "Today", "Last 7 days", "Last 30 days"],
+        ["All time", "Today", "Last 3 days", "Last 7 days", "Last 30 days",
+         "Last 3 months", "Last 6 months", "Last year", "Custom range"],
         index=0,
     )
 
@@ -101,15 +118,56 @@ def render_sidebar():
     now = datetime.now(timezone.utc)
     if date_option == "Today":
         date_from = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif date_option == "Last 3 days":
+        date_from = now - timedelta(days=3)
     elif date_option == "Last 7 days":
         date_from = now - timedelta(days=7)
     elif date_option == "Last 30 days":
         date_from = now - timedelta(days=30)
+    elif date_option == "Last 3 months":
+        date_from = now - timedelta(days=90)
+    elif date_option == "Last 6 months":
+        date_from = now - timedelta(days=180)
+    elif date_option == "Last year":
+        date_from = now - timedelta(days=365)
+    elif date_option == "Custom range":
+        custom_date = st.sidebar.date_input("From date:", value=now.date() - timedelta(days=30))
+        date_from = datetime(custom_date.year, custom_date.month, custom_date.day, tzinfo=timezone.utc)
 
     if st.sidebar.button("Search", type="primary"):
-        return query, categories, max_results, date_from
+        return query, author, categories, max_results, date_from
 
-    return None, categories, max_results, date_from
+    # Provider status
+    st.sidebar.markdown("---")
+    summ_provider = os.getenv("SUMMARIZER_PROVIDER", "ollama")
+    summ_model = os.getenv("LLM_MODEL", "") or {
+        "ollama": os.getenv("OLLAMA_MODEL", "llama3.1:latest"),
+        "gemini": "gemini-2.0-flash",
+        "anthropic": "claude-3-5-haiku-20241022",
+        "openai": "gpt-4o-mini",
+    }.get(summ_provider, summ_provider)
+    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    chat_model = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash") if has_gemini else summ_model
+    # Add paper by URL or ID
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Add paper by ArXiv URL or ID**")
+    arxiv_input = st.sidebar.text_input(
+        "ArXiv URL or ID",
+        placeholder="e.g. 2301.12345 or arxiv.org/abs/2301.12345",
+        label_visibility="collapsed",
+        key="sidebar_arxiv_input",
+    )
+    if st.sidebar.button("Add paper", key="sidebar_add_paper"):
+        if arxiv_input.strip():
+            _ingest_by_arxiv_id(arxiv_input.strip())
+        else:
+            st.sidebar.warning("Please enter an ArXiv URL or ID.")
+
+    st.sidebar.markdown("---")
+    st.sidebar.caption(f"**Summarization:** {summ_provider} / {summ_model}")
+    st.sidebar.caption(f"**Chat:** {'gemini' if has_gemini else summ_provider} / {chat_model}")
+
+    return None, author, categories, max_results, date_from
 
 
 def _authors_str(paper: Dict, max_shown: int = 3) -> str:
@@ -154,14 +212,23 @@ def _store_paper(pid: str, metadata: Dict, summary: str):
     """Persist a paper to JSON store, vector DB, and knowledge graph."""
     paper_store.save_paper(pid, metadata, summary)
 
+    def _chroma_safe(v):
+        """Convert a value to a ChromaDB-safe scalar."""
+        if v is None or isinstance(v, (str, int, float, bool)):
+            return v
+        if isinstance(v, list):
+            return ", ".join(str(i) for i in v)
+        # Timestamps, dates, or anything else — stringify
+        return str(v)
+
     chroma_meta = {
-        k: v for k, v in {
+        k: _chroma_safe(v) for k, v in {
             **metadata,
             "summary": summary,
-            "authors": ", ".join(metadata.get("authors", [])),
-            "categories": ", ".join(metadata.get("categories", [])),
+            "authors": ", ".join(str(a) for a in metadata.get("authors", [])) if isinstance(metadata.get("authors"), list) else str(metadata.get("authors", "")),
+            "categories": ", ".join(str(c) for c in metadata.get("categories", [])) if isinstance(metadata.get("categories"), list) else str(metadata.get("categories", "")),
         }.items()
-        if v is not None and not isinstance(v, list)
+        if _chroma_safe(v) is not None
     }
     # Use upsert pattern: delete first if exists (for regeneration), then add
     try:
@@ -180,17 +247,77 @@ def _store_paper(pid: str, metadata: Dict, summary: str):
     st.session_state.kg.connect_by_author(pid, metadata.get("authors", []))
 
 
-def _fetch_text(result, n_pages: int = 3) -> str:
-    """Download PDF and extract text (safe to run in a thread)."""
+def _parse_arxiv_id(raw: str) -> str:
+    """Extract a clean arxiv ID from a URL or bare ID string."""
+    raw = raw.strip().rstrip("/")
+    # Handle URLs like https://arxiv.org/abs/2301.12345 or arxiv.org/pdf/2301.12345v2
+    for prefix in ("abs/", "pdf/", "html/", "src/"):
+        if prefix in raw:
+            raw = raw.split(prefix)[-1]
+    # Strip version suffix for lookup but keep original
+    return raw.split("v")[0] if re.match(r"^\d{4}\.\d{4,5}", raw.split("v")[0]) else raw
+
+
+def _ingest_by_arxiv_id(raw_input: str):
+    """Fetch, summarize, and store a paper given an ArXiv URL or ID."""
+    import arxiv as _arxiv
+
+    arxiv_id = _parse_arxiv_id(raw_input)
+
+    if paper_store.paper_exists(arxiv_id) or paper_store.paper_exists(arxiv_id + "v1"):
+        st.sidebar.info("Paper already in library.")
+        return
+
+    with st.sidebar:
+        with st.spinner("Fetching paper..."):
+            result = next(
+                st.session_state.arxiv.client.results(
+                    _arxiv.Search(id_list=[arxiv_id], max_results=1)
+                ),
+                None,
+            )
+        if result is None:
+            st.error(f"Could not find paper {arxiv_id} on ArXiv.")
+            return
+
+        metadata = st.session_state.arxiv.get_paper_metadata(result)
+        pid = metadata["arxiv_id"]
+
+        with st.spinner("Loading paper text..."):
+            text = _fetch_text(result, pid)
+
+        with st.spinner("Summarizing..."):
+            summary = st.session_state.summarizer.summarize(text)
+
+        metadata["summary"] = summary
+        _store_paper(pid, metadata, summary)
+        st.session_state.papers.append(metadata)
+        st.success(f"Added: {metadata['title'][:60]}...")
+
+
+def _fetch_text(result, arxiv_id: str) -> str:
+    """Get paper text — HTML source preferred, PDF fallback (safe to run in a thread)."""
+    cache_dir = Path("data/papers")
+    text = fetch_html_text(arxiv_id, cache_dir)
+    if text:
+        return text
     pdf_path = st.session_state.arxiv.get_pdf_path(result)
-    return st.session_state.pdf_extractor.extract_first_n_pages(pdf_path, n_pages=n_pages)
+    return st.session_state.pdf_extractor.extract_first_n_pages(pdf_path, n_pages=6)
 
 
-def render_search_results(query: str, categories: List[str], max_results: int, date_from: Optional[datetime]):
+def render_search_results(query: str, author: str, categories: List[str], max_results: int, date_from: Optional[datetime]):
     with st.spinner("Searching ArXiv..."):
-        papers = st.session_state.arxiv.search(
-            query=query, max_results=max_results, categories=categories, date_from=date_from
-        )
+        try:
+            papers = st.session_state.arxiv.search(
+                query=query, author=author, max_results=max_results, categories=categories, date_from=date_from
+            )
+        except Exception as e:
+            if "429" in str(e):
+                st.error("ArXiv rate limit hit (HTTP 429). Wait 30-60 seconds and try again. "
+                         "If this keeps happening, reduce max results or search less frequently.")
+            else:
+                st.error(f"ArXiv search failed: {e}")
+            return
 
     if not papers:
         st.info("No papers found. Try different keywords, categories, or date range.")
@@ -216,7 +343,7 @@ def render_search_results(query: str, categories: List[str], max_results: int, d
         progress = st.progress(0, text="Downloading PDFs...")
         texts = {}
         with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {pool.submit(_fetch_text, result): (result, meta) for result, meta in new_results}
+            futures = {pool.submit(_fetch_text, result, meta["arxiv_id"]): (result, meta) for result, meta in new_results}
             for i, future in enumerate(as_completed(futures)):
                 _, meta = futures[future]
                 try:
@@ -242,6 +369,79 @@ def render_search_results(query: str, categories: List[str], max_results: int, d
         render_paper_card(metadata)
 
 
+def render_multi_paper_chat():
+    """Chat across multiple selected papers simultaneously."""
+    st.markdown("### Multi-paper chat")
+    all_papers = paper_store.load_all_papers()
+    if not all_papers:
+        st.info("No papers in your library yet.")
+        return
+
+    options = {p.get("title", p.get("arxiv_id", "")): p for p in all_papers}
+    selected_titles = st.multiselect(
+        "Select papers to chat with:",
+        options=list(options.keys()),
+        key="multi_chat_selection",
+    )
+
+    if not selected_titles:
+        return
+
+    selected_papers = [options[t] for t in selected_titles]
+
+    if st.button("Clear multi-paper chat", key="clear_multi_chat"):
+        st.session_state.pop("multi_chat_history", None)
+        st.session_state.pop("multi_chat_context", None)
+
+    # Build combined context once (cached in session state)
+    context_key = "multi_chat_context"
+    context_ids = tuple(p.get("arxiv_id", "") for p in selected_papers)
+    if st.session_state.get(f"{context_key}_ids") != context_ids:
+        with st.spinner("Loading paper texts..."):
+            parts = []
+            for p in selected_papers:
+                pid = p.get("arxiv_id", "")
+                text = _get_paper_text(pid, p)
+                if len(text) > 15000:
+                    text = text[:15000] + "\n...[truncated]"
+                parts.append(
+                    f"=== Paper: {p.get('title', pid)} ===\n"
+                    f"Authors: {_authors_str(p)}\n"
+                    f"Published: {p.get('published', '')}\n\n"
+                    f"{text}"
+                )
+            st.session_state[context_key] = "\n\n".join(parts)
+            st.session_state[f"{context_key}_ids"] = context_ids
+
+    system_prompt = (
+        "You are a research assistant. You have read the following academic papers.\n\n"
+        f"{st.session_state[context_key]}\n\n"
+        "Answer questions about these papers accurately. When comparing papers, be specific "
+        "about which paper you are referring to. If something is not covered in the texts, say so."
+    )
+
+    history = st.session_state.get("multi_chat_history", [])
+    for msg in history:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    user_input = st.chat_input("Ask a question across these papers...", key="multi_chat_input")
+    if user_input:
+        with st.chat_message("user"):
+            st.write(user_input)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                messages = history + [{"role": "user", "content": user_input}]
+                try:
+                    reply = st.session_state.summarizer._dispatch_chat(system_prompt, messages)
+                except Exception as e:
+                    reply = f"Error: {e}"
+            st.write(reply)
+        history.append({"role": "user", "content": user_input})
+        history.append({"role": "assistant", "content": reply})
+        st.session_state["multi_chat_history"] = history
+
+
 def render_vector_search():
     st.header("Semantic Search")
     semantic_query = st.text_input(
@@ -259,6 +459,9 @@ def render_vector_search():
                 render_paper_card(metadata, show_actions=False)
         else:
             st.info("No papers in the database yet. Use the ArXiv search to add papers.")
+
+    st.markdown("---")
+    render_multi_paper_chat()
 
 
 def render_knowledge_graph():
@@ -296,8 +499,15 @@ def render_knowledge_graph():
         col3.metric("Avg connections", f"{len(edges)/len(nodes):.1f}" if nodes else "0")
 
 
-def _get_paper_text(pid: str, paper: Dict, n_pages: int = 8) -> str:
-    """Get extracted text for a paper, downloading PDF if needed."""
+def _get_paper_text(pid: str, paper: Dict) -> str:
+    """Get full paper text. Tries ArXiv HTML first, falls back to PDF extraction."""
+    cache_dir = Path("data/papers")
+    # Try HTML source first — full paper, clean text, no page limit
+    text = fetch_html_text(pid, cache_dir)
+    if text:
+        return text
+    # Fallback: PDF extraction (may be incomplete)
+    print(f"[chat] HTML unavailable for {pid}, falling back to PDF")
     pdf_path = st.session_state.arxiv.get_pdf_path_by_id(pid)
     if pdf_path is None or not pdf_path.exists():
         import arxiv as _arxiv
@@ -307,22 +517,35 @@ def _get_paper_text(pid: str, paper: Dict, n_pages: int = 8) -> str:
         if result is None:
             return ""
         pdf_path = st.session_state.arxiv.get_pdf_path(result)
-    return st.session_state.pdf_extractor.extract_first_n_pages(pdf_path, n_pages=n_pages)
+    return st.session_state.pdf_extractor.extract_text(pdf_path)
 
 
 def _chat_with_paper(pid: str, paper: Dict, user_message: str) -> str:
     """Send a message to the configured LLM provider with the paper in context."""
     chat_key = f"chat_text_{pid}"
-    if chat_key not in st.session_state:
-        with st.spinner("Loading paper text..."):
-            st.session_state[chat_key] = _get_paper_text(pid, paper, n_pages=8)
+    source_key = f"chat_text_source_{pid}"
+    if chat_key not in st.session_state or st.session_state.get(f"{chat_key}_v") != 2:
+        with st.spinner("Loading full paper text..."):
+            text = _get_paper_text(pid, paper)
+            st.session_state[chat_key] = text
+            st.session_state[f"{chat_key}_v"] = 2  # bump to invalidate old PDF-only cache
+            # Record source for display
+            clean_id = pid.split("v")[0]
+            from pathlib import Path as _Path
+            html_cached = (_Path("data/papers") / f"{clean_id.replace('.','_')}_html.txt").exists()
+            st.session_state[source_key] = "HTML (full paper)" if html_cached else "PDF"
 
     paper_text = st.session_state[chat_key]
-    if len(paper_text) > 30000:
-        paper_text = paper_text[:30000] + "\n...[truncated]"
+    # Gemini (1M token context) gets the full text.
+    # Ollama fallback is limited to its context window.
+    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    if not has_gemini:
+        char_limit = int(os.getenv("OLLAMA_NUM_CTX", "32768")) * 3
+        if len(paper_text) > char_limit:
+            paper_text = paper_text[:char_limit] + "\n...[truncated]"
 
     system_prompt = (
-        f"You are a research assistant. You have read the following academic paper.\n\n"
+        f"You are a research assistant. You have read the following academic paper in full.\n\n"
         f"Title: {paper.get('title', '')}\n"
         f"Authors: {_authors_str(paper)}\n"
         f"Published: {paper.get('published', '')}\n\n"
@@ -336,7 +559,7 @@ def _chat_with_paper(pid: str, paper: Dict, user_message: str) -> str:
     messages = history + [{"role": "user", "content": user_message}]
 
     try:
-        reply = st.session_state.summarizer._dispatch_chat(system_prompt, messages)
+        reply = st.session_state.summarizer.dispatch_chat_gemini(system_prompt, messages)
     except Exception as e:
         reply = f"Error: {e}"
 
@@ -352,7 +575,13 @@ def render_paper_chat(pid: str, paper: Dict):
     history_key = f"chat_history_{pid}"
     history = st.session_state.get(history_key, [])
 
+    source = st.session_state.get(f"chat_text_source_{pid}", "")
+    chars = len(st.session_state.get(f"chat_text_{pid}", ""))
+    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    chat_model = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash") if has_gemini else st.session_state.summarizer._active_model()
     st.markdown("**Chat with this paper**")
+    if chars:
+        st.caption(f"Context: {chars:,} chars — source: {source} — model: {chat_model}")
 
     # Show conversation history
     for msg in history:
@@ -377,21 +606,23 @@ def render_paper_chat(pid: str, paper: Dict):
 def _regenerate_summary(paper: Dict, detailed: bool = False):
     """Re-summarize a single paper and update all stores."""
     pid = paper.get("arxiv_id", paper.get("id", ""))
-    n_pages = 6 if detailed else 3
-    # Find the PDF
-    pdf_path = st.session_state.arxiv.get_pdf_path_by_id(pid)
-    if pdf_path is None or not pdf_path.exists():
-        # Re-download
-        import arxiv as _arxiv
-        result = next(st.session_state.arxiv.client.results(
-            _arxiv.Search(query=f"id:{pid}", max_results=1)
-        ), None)
-        if result is None:
-            st.error(f"Could not find paper {pid} on ArXiv.")
-            return
-        pdf_path = st.session_state.arxiv.get_pdf_path(result)
 
-    text = st.session_state.pdf_extractor.extract_first_n_pages(pdf_path, n_pages=n_pages)
+    # Try HTML first (full paper), fall back to PDF
+    text = fetch_html_text(pid, Path("data/papers"))
+    if not text:
+        pdf_path = st.session_state.arxiv.get_pdf_path_by_id(pid)
+        if pdf_path is None or not pdf_path.exists():
+            import arxiv as _arxiv
+            result = next(st.session_state.arxiv.client.results(
+                _arxiv.Search(query=f"id:{pid}", max_results=1)
+            ), None)
+            if result is None:
+                st.error(f"Could not find paper {pid} on ArXiv.")
+                return
+            pdf_path = st.session_state.arxiv.get_pdf_path(result)
+        n_pages = 6 if detailed else 3
+        text = st.session_state.pdf_extractor.extract_first_n_pages(pdf_path, n_pages=n_pages)
+
     summary = st.session_state.summarizer.summarize(text, max_length=500 if detailed else 300, detailed=detailed)
     _store_paper(pid, paper, summary)
 
@@ -442,24 +673,69 @@ def render_papers_list():
 
     st.markdown("---")
 
+    # Search and filter controls
+    search_col1, search_col2 = st.columns(2)
+    text_query = search_col1.text_input("Search titles & summaries", placeholder="e.g., gravitational waves", key="lib_text_search")
+    author_query = search_col2.text_input("Search by author", placeholder="e.g., Smith", key="lib_author_search")
+
+    filter_col1, filter_col2 = st.columns(2)
     if "categories" in df.columns:
-        all_cats = df["categories"].explode().dropna().unique().tolist()
-        selected = st.multiselect("Filter by category:", options=all_cats, default=[])
-        if selected:
-            mask = df["categories"].apply(lambda x: any(c in x for c in selected))
-            df = df[mask]
+        all_cats = sorted(df["categories"].explode().dropna().unique().tolist())
+        selected_cats = filter_col1.multiselect("Filter by category:", options=all_cats, default=[])
+    else:
+        selected_cats = []
+
+    sort_by = filter_col2.selectbox("Sort by:", ["Date (newest)", "Date (oldest)", "Title (A–Z)", "Title (Z–A)"])
+
+    # Apply text search (overrides df if query given)
+    if text_query.strip():
+        matches = paper_store.search_by_text(text_query.strip())
+        df = pd.DataFrame(matches) if matches else pd.DataFrame()
+    if author_query.strip():
+        matches = paper_store.search_by_author(author_query.strip())
+        df = pd.DataFrame(matches) if matches else pd.DataFrame()
+
+    # Apply category filter
+    if selected_cats and not df.empty and "categories" in df.columns:
+        mask = df["categories"].apply(lambda x: any(c in (x if isinstance(x, list) else []) for c in selected_cats))
+        df = df[mask]
+
+    # Apply sort
+    if not df.empty and "published" in df.columns:
+        df = df.copy()
+        df["_pub_sort"] = pd.to_datetime(df["published"], errors="coerce")
+        if sort_by == "Date (newest)":
+            df = df.sort_values("_pub_sort", ascending=False)
+        elif sort_by == "Date (oldest)":
+            df = df.sort_values("_pub_sort", ascending=True)
+        elif sort_by == "Title (A–Z)":
+            df = df.sort_values("title", ascending=True)
+        elif sort_by == "Title (Z–A)":
+            df = df.sort_values("title", ascending=False)
+
+    if df.empty:
+        st.info("No papers match the current filters.")
+        return
+
+    st.caption(f"Showing {min(len(df), 50)} of {len(df)} papers")
 
     # Per-paper cards with regenerate button
+    # Keep a live summary cache in session state so regeneration shows immediately
+    if "live_summaries" not in st.session_state:
+        st.session_state.live_summaries = {}
+
     for _, row in df.head(50).iterrows():
         paper = row.to_dict()
         pid = paper.get("arxiv_id", "")
+        # Use live summary if we just regenerated it this session
+        displayed_summary = st.session_state.live_summaries.get(pid, paper.get("summary", "No summary available."))
         with st.expander(f"**{paper.get('title', pid)}**", expanded=False):
             col1, col2 = st.columns([3, 1])
             with col1:
                 st.caption(f"Authors: {_authors_str(paper)}")
                 st.caption(f"Published: {paper.get('published', 'N/A')}")
                 st.markdown("**Summary**")
-                st.write(paper.get("summary", "No summary available."))
+                st.write(displayed_summary)
             with col2:
                 if pid:
                     st.markdown(f"[View on ArXiv](https://arxiv.org/abs/{pid})")
@@ -468,11 +744,49 @@ def render_papers_list():
                     with st.spinner("Summarizing..."):
                         new_summary = _regenerate_summary(paper, detailed=detailed)
                     if new_summary:
-                        paper["summary"] = new_summary
-                        st.success("Done.")
+                        st.session_state.live_summaries[pid] = new_summary
+                        st.success("Done. Summary updated above.")
                 show_chat_key = f"show_chat_{pid}"
                 if st.button("Chat with paper", key=f"chat_btn_{pid}"):
                     st.session_state[show_chat_key] = not st.session_state.get(show_chat_key, False)
+                if st.button("More like this", key=f"mlt_{pid}"):
+                    st.session_state[f"show_mlt_{pid}"] = not st.session_state.get(f"show_mlt_{pid}", False)
+                # Delete with confirmation
+                confirm_key = f"confirm_delete_{pid}"
+                if not st.session_state.get(confirm_key, False):
+                    if st.button("Delete", key=f"del_{pid}", type="secondary"):
+                        st.session_state[confirm_key] = True
+                else:
+                    st.warning("Delete this paper?")
+                    dcol1, dcol2 = st.columns(2)
+                    if dcol1.button("Yes, delete", key=f"del_confirm_{pid}", type="primary"):
+                        paper_store.delete_paper(pid)
+                        st.session_state.vdb.delete_paper(pid)
+                        st.session_state.papers = [
+                            p for p in st.session_state.papers
+                            if p.get("arxiv_id") != pid
+                        ]
+                        st.session_state.pop(confirm_key, None)
+                        st.success("Deleted.")
+                    if dcol2.button("Cancel", key=f"del_cancel_{pid}"):
+                        st.session_state[confirm_key] = False
+            if st.session_state.get(f"show_mlt_{pid}", False):
+                vec = st.session_state.vdb.get_embedding(pid)
+                if vec is not None:
+                    similar = st.session_state.vdb.search_by_vector(vec, top_k=5, exclude_id=pid)
+                    if similar:
+                        st.markdown("**Similar papers in your library:**")
+                        for s in similar:
+                            m = s["metadata"]
+                            title = m.get("title", s["id"])
+                            sid = s["id"]
+                            score = 1 - s["distance"]
+                            st.markdown(f"- **{title}** — similarity {score:.2f}  \n"
+                                        f"  [{sid}](https://arxiv.org/abs/{sid})")
+                    else:
+                        st.info("No similar papers found in your library yet.")
+                else:
+                    st.info("Embedding not available for this paper.")
             if st.session_state.get(f"show_chat_{pid}", False):
                 st.markdown("---")
                 render_paper_chat(pid, paper)
@@ -563,16 +877,838 @@ def render_schedule():
                 st.caption("You can install manually: launchctl load " + str(plist_path))
 
 
+def _build_library_context() -> str:
+    """Build a compact context string from all stored papers for the assistant."""
+    papers = paper_store.load_all_papers()
+    if not papers:
+        return ""
+    lines = [f"The user has a library of {len(papers)} research papers:\n"]
+    for p in papers:
+        pid = p.get("arxiv_id", "")
+        title = p.get("title", "Unknown")
+        authors = _authors_str(p)
+        published = str(p.get("published", ""))[:10]
+        cats = ", ".join(p.get("categories", [])) if isinstance(p.get("categories"), list) else str(p.get("categories", ""))
+        summary = p.get("summary", "").strip()
+        lines.append(
+            f"---\n"
+            f"ID: {pid}\n"
+            f"Title: {title}\n"
+            f"Authors: {authors}\n"
+            f"Published: {published}  Categories: {cats}\n"
+            f"Summary: {summary}\n"
+        )
+    return "\n".join(lines)
+
+
+def _assistant_call(system: str, messages: list) -> str:
+    """Call Gemini (preferred) or fall back to configured provider."""
+    try:
+        return st.session_state.summarizer.dispatch_chat_gemini(system, messages)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def render_assistant():
+    st.header("Research Assistant")
+    st.markdown(
+        "Chat with your entire library, generate a research briefing, or find gaps and open questions."
+    )
+
+    papers = paper_store.load_all_papers()
+    if not papers:
+        st.info("Your library is empty. Search for papers first.")
+        return
+
+    n = len(papers)
+    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    model_name = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash") if has_gemini else st.session_state.summarizer._active_model()
+    st.caption(f"{n} papers in library — model: {model_name}")
+
+    mode = st.radio(
+        "Mode:",
+        ["Cross-library chat", "Research briefing", "Gap finder", "Project ideas"],
+        horizontal=True,
+        key="assistant_mode",
+    )
+
+    # Build library context (cached, invalidated when paper count changes)
+    ctx_key = "assistant_library_context"
+    ctx_n_key = "assistant_library_n"
+    if st.session_state.get(ctx_n_key) != n:
+        with st.spinner("Indexing library..."):
+            st.session_state[ctx_key] = _build_library_context()
+            st.session_state[ctx_n_key] = n
+
+    library_context = st.session_state[ctx_key]
+
+    # Prepend researcher profile to all assistant prompts
+    profile = researcher_profile.load()
+    profile_context = researcher_profile.to_context_string(profile)
+    if profile_context:
+        library_context = profile_context + "\n\n" + library_context
+
+    # ------------------------------------------------------------------ #
+    if mode == "Cross-library chat":
+        st.markdown("Ask anything about your library — themes, comparisons, recommendations, connections.")
+
+        system = (
+            "You are a research assistant with access to the user's personal library of academic papers. "
+            "Answer questions accurately based on the papers listed. When referencing a paper, mention its title and authors. "
+            "If the answer requires knowledge beyond the library, say so.\n\n"
+            + library_context
+        )
+
+        history = st.session_state.get("assistant_chat_history", [])
+        for msg in history:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+
+        user_input = st.chat_input("Ask about your library...", key="assistant_chat_input")
+        if user_input:
+            with st.chat_message("user"):
+                st.write(user_input)
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    reply = _assistant_call(system, history + [{"role": "user", "content": user_input}])
+                st.write(reply)
+            history.append({"role": "user", "content": user_input})
+            history.append({"role": "assistant", "content": reply})
+            st.session_state["assistant_chat_history"] = history
+
+        if history and st.button("Clear conversation", key="clear_assistant_chat"):
+            st.session_state["assistant_chat_history"] = []
+
+    # ------------------------------------------------------------------ #
+    elif mode == "Research briefing":
+        st.markdown(
+            "Generate a structured overview of your library: key themes, recent developments, "
+            "and connections between papers."
+        )
+
+        custom_focus = st.text_input(
+            "Optional focus (leave blank for general overview):",
+            placeholder="e.g., kilonova models, machine learning methods, gravitational waves",
+            key="briefing_focus",
+        )
+
+        if st.button("Generate briefing", type="primary", key="gen_briefing"):
+            focus_clause = f" Focus particularly on: {custom_focus}." if custom_focus.strip() else ""
+            system = (
+                "You are a research assistant helping a scientist understand their paper library.\n\n"
+                + library_context
+            )
+            prompt = (
+                f"Write a structured research briefing based on this library.{focus_clause}\n\n"
+                "Structure it as:\n"
+                "## Key Themes\n"
+                "What are the main research themes and topics across these papers?\n\n"
+                "## Recent Developments\n"
+                "What are the most recent findings or advances (focus on newest papers)?\n\n"
+                "## Notable Connections\n"
+                "Which papers are closely related? What methodological or thematic threads connect them?\n\n"
+                "## Suggested Reading Order\n"
+                "For someone new to this field, suggest an order to read these papers and why.\n\n"
+                "Be specific — cite paper titles and authors."
+            )
+            with st.spinner("Generating briefing..."):
+                briefing = _assistant_call(system, [{"role": "user", "content": prompt}])
+            st.session_state["last_briefing"] = briefing
+
+        if "last_briefing" in st.session_state:
+            st.markdown(st.session_state["last_briefing"])
+            if st.button("Copy to clipboard", key="copy_briefing"):
+                st.code(st.session_state["last_briefing"], language="markdown")
+
+    # ------------------------------------------------------------------ #
+    elif mode == "Gap finder":
+        st.markdown(
+            "Identify understudied areas, open questions, and potential research directions "
+            "based on your library."
+        )
+
+        angle = st.selectbox(
+            "Perspective:",
+            [
+                "Open questions and unknowns",
+                "Methodological gaps",
+                "Contradictions or debates in the literature",
+                "Potential future directions",
+                "Grant / proposal angles",
+            ],
+            key="gap_angle",
+        )
+
+        if st.button("Analyse gaps", type="primary", key="gen_gaps"):
+            angle_prompts = {
+                "Open questions and unknowns": (
+                    "What are the key open questions and unresolved problems across these papers? "
+                    "What do the authors themselves identify as unknowns or future work?"
+                ),
+                "Methodological gaps": (
+                    "What methodological limitations or gaps exist across these papers? "
+                    "What methods are missing, underused, or identified as needing improvement?"
+                ),
+                "Contradictions or debates in the literature": (
+                    "Are there any contradictions, disagreements, or active debates between papers in this library? "
+                    "Where do authors reach different conclusions on the same question?"
+                ),
+                "Potential future directions": (
+                    "Based on the current state of research in these papers, what are the most promising "
+                    "future research directions? What natural next steps follow from these findings?"
+                ),
+                "Grant / proposal angles": (
+                    "Identify the most compelling research gaps that could form the basis of a grant proposal. "
+                    "What problems are clearly important, currently unsolved, and tractable?"
+                ),
+            }
+            system = (
+                "You are a senior research advisor helping a scientist identify gaps and opportunities "
+                "in their field based on their paper library.\n\n"
+                + library_context
+            )
+            prompt = (
+                f"{angle_prompts[angle]}\n\n"
+                "Be specific — reference paper titles and authors where relevant. "
+                "Structure your response with clear headings and bullet points."
+            )
+            with st.spinner("Analysing..."):
+                gaps = _assistant_call(system, [{"role": "user", "content": prompt}])
+            st.session_state["last_gaps"] = gaps
+
+        if "last_gaps" in st.session_state:
+            st.markdown(st.session_state["last_gaps"])
+
+    # ------------------------------------------------------------------ #
+    elif mode == "Project ideas":
+        st.markdown(
+            "Propose concrete new research projects based on fresh ArXiv papers and your library, "
+            "tailored to your specialities."
+        )
+
+        col1, col2 = st.columns(2)
+        topic = col1.text_input(
+            "Research topic",
+            placeholder="e.g., kilonovae, magnetar-powered transients, gravitational wave counterparts",
+            key="proj_topic",
+        )
+        profile_tools = researcher_profile.load().get("methods_and_tools", "")
+        specialities = col2.text_input(
+            "Your specialities / tools",
+            value=profile_tools,
+            placeholder="e.g., Bayesian inference, light curve modelling, redback, MCMC",
+            key="proj_specialities",
+        )
+        n_ideas = st.slider("Number of project ideas", 2, 6, 3, key="proj_n_ideas")
+        fetch_fresh = st.checkbox(
+            "Fetch fresh ArXiv papers on this topic in real-time",
+            value=True,
+            key="proj_fetch_fresh",
+        )
+
+        if st.button("Generate project ideas", type="primary", key="gen_projects"):
+            if not topic.strip():
+                st.warning("Please enter a research topic.")
+            else:
+                # Optionally fetch fresh ArXiv abstracts
+                fresh_context = ""
+                if fetch_fresh:
+                    with st.spinner(f"Fetching latest ArXiv papers on '{topic}'..."):
+                        try:
+                            fresh_results = st.session_state.arxiv.search(
+                                query=topic.strip(),
+                                max_results=10,
+                                categories=[],
+                                date_from=None,
+                                author="",
+                            )
+                            if fresh_results:
+                                fresh_lines = [f"\nLatest ArXiv papers on '{topic}' (fetched in real-time):\n"]
+                                for r in fresh_results:
+                                    meta = st.session_state.arxiv.get_paper_metadata(r)
+                                    authors_str = ", ".join(meta.get("authors", [])[:3])
+                                    fresh_lines.append(
+                                        f"- {meta['title']} — {authors_str} ({str(meta.get('published',''))[:10]})\n"
+                                        f"  Abstract: {r.summary[:400].strip()}...\n"
+                                    )
+                                fresh_context = "\n".join(fresh_lines)
+                        except Exception as e:
+                            st.warning(f"Could not fetch fresh papers: {e}")
+
+                system = (
+                    "You are a senior research advisor helping an astrophysics researcher identify "
+                    "novel, tractable project ideas. You have access to their paper library and "
+                    "knowledge of the latest work in the field.\n\n"
+                    + library_context
+                    + fresh_context
+                )
+
+                specialities_clause = (
+                    f"The researcher's specialities and tools include: {specialities.strip()}.\n"
+                    if specialities.strip() else ""
+                )
+
+                prompt = (
+                    f"Propose {n_ideas} concrete, novel research project ideas on the topic of: **{topic}**.\n\n"
+                    f"{specialities_clause}"
+                    "For each project idea, structure it as:\n\n"
+                    "### Project [N]: [Catchy title]\n"
+                    "**Motivation:** Why is this problem important and timely? What gap does it address?\n"
+                    "**Approach:** What would you actually do? Be specific about methods, data, and tools.\n"
+                    "**Novelty:** What makes this distinct from existing work in the library or the fresh papers?\n"
+                    "**Relevant papers:** Which papers from the library or the fresh ArXiv list are most relevant?\n"
+                    "**Difficulty / timeline:** Is this a 3-month, 1-year, or multi-year project? What are the main risks?\n\n"
+                    "Prioritise ideas that are:\n"
+                    "- Feasible given the researcher's specialities\n"
+                    "- Motivated by genuine gaps in the current literature\n"
+                    "- Timely given the most recent papers\n"
+                    "Be specific and concrete — avoid vague suggestions."
+                )
+
+                with st.spinner("Generating project ideas..."):
+                    ideas = _assistant_call(system, [{"role": "user", "content": prompt}])
+                st.session_state["last_project_ideas"] = ideas
+                st.session_state["last_project_topic"] = topic
+
+        if "last_project_ideas" in st.session_state:
+            st.markdown(f"*Project ideas for: **{st.session_state.get('last_project_topic', '')}***")
+            st.markdown(st.session_state["last_project_ideas"])
+
+            # Follow-up chat to drill into a specific idea
+            st.markdown("---")
+            st.markdown("**Drill down on an idea**")
+            followup = st.chat_input("Ask a follow-up question about any of these ideas...", key="proj_followup_input")
+            if followup:
+                proj_history = st.session_state.get("proj_followup_history", [])
+                # System includes the generated ideas as context
+                proj_system = (
+                    "You are a senior research advisor. You previously proposed the following project ideas:\n\n"
+                    + st.session_state["last_project_ideas"]
+                    + "\n\nAnswer follow-up questions about these ideas in detail. "
+                    "Be specific and practical."
+                )
+                with st.chat_message("user"):
+                    st.write(followup)
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        reply = _assistant_call(proj_system, proj_history + [{"role": "user", "content": followup}])
+                    st.write(reply)
+                proj_history.append({"role": "user", "content": followup})
+                proj_history.append({"role": "assistant", "content": reply})
+                st.session_state["proj_followup_history"] = proj_history
+
+
+def render_profile():
+    st.header("Researcher Profile")
+    st.markdown(
+        "Your profile is used by the Assistant to tailor project ideas, briefings, and gap analysis to your background. "
+        "Generate it automatically from your library or fill it in manually."
+    )
+
+    profile = researcher_profile.load()
+
+    # Auto-generate from library
+    papers = paper_store.load_all_papers()
+    gen_col, _ = st.columns([1, 3])
+    if gen_col.button("Auto-generate from library", type="primary", disabled=len(papers) == 0):
+        if not papers:
+            st.warning("Add some papers to your library first.")
+        else:
+            library_ctx = _build_library_context()
+            system = "You are helping a researcher build their professional profile based on their paper library."
+            prompt = (
+                "Based on this researcher's paper library, infer a professional profile. "
+                "Return ONLY a JSON object with these exact keys (no markdown, no explanation):\n"
+                '{"position": "...", "research_areas": "...", "methods_and_tools": "...", "bio": "..."}\n\n'
+                "Guidelines:\n"
+                "- position: likely career stage (e.g. 'Postdoctoral researcher')\n"
+                "- research_areas: comma-separated list of specific research topics (2-5 items)\n"
+                "- methods_and_tools: comma-separated list of methods, codes, frameworks evident from the papers (3-8 items)\n"
+                "- bio: 2-3 sentence summary of their research focus and approach, written in third person\n\n"
+                + library_ctx
+            )
+            with st.spinner("Inferring profile from your library..."):
+                raw = _assistant_call(system, [{"role": "user", "content": prompt}])
+            # Parse JSON from response
+            try:
+                # Strip markdown code fences if present
+                clean = raw.strip().strip("```json").strip("```").strip()
+                inferred = json.loads(clean)
+                # Merge — keep name/institution if user already set them
+                for k in ("position", "research_areas", "methods_and_tools", "bio"):
+                    if inferred.get(k):
+                        profile[k] = inferred[k]
+                researcher_profile.save(profile)
+                st.success("Profile generated — review and edit below.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not parse response: {e}")
+                st.code(raw)
+
+    st.markdown("---")
+
+    # Editable fields
+    with st.form("profile_form"):
+        col1, col2 = st.columns(2)
+        profile["name"] = col1.text_input("Name", value=profile.get("name", ""))
+        profile["position"] = col2.text_input("Position", value=profile.get("position", ""), placeholder="e.g. Postdoctoral researcher")
+        profile["institution"] = col1.text_input("Institution", value=profile.get("institution", ""))
+        profile["research_areas"] = st.text_area(
+            "Research areas",
+            value=profile.get("research_areas", ""),
+            placeholder="e.g. kilonovae, neutron star mergers, gravitational wave counterparts",
+            height=80,
+        )
+        profile["methods_and_tools"] = st.text_area(
+            "Methods & tools",
+            value=profile.get("methods_and_tools", ""),
+            placeholder="e.g. Bayesian inference, MCMC, redback, light curve modelling, Python",
+            height=80,
+        )
+        profile["bio"] = st.text_area(
+            "Bio",
+            value=profile.get("bio", ""),
+            placeholder="A short description of your research focus...",
+            height=100,
+        )
+        if st.form_submit_button("Save profile", type="primary"):
+            researcher_profile.save(profile)
+            st.success("Profile saved.")
+
+    if not researcher_profile.is_empty(profile):
+        st.markdown("---")
+        st.markdown("**Current profile (as seen by the Assistant):**")
+        st.code(researcher_profile.to_context_string(profile), language="markdown")
+
+
+# ---------------------------------------------------------------------------
+# Shared idea workspace
+# ---------------------------------------------------------------------------
+
+def _idea_workspace(idea_type: str, idea: Dict):
+    """Render the workspace for a single saved idea."""
+    iid = idea["id"]
+    profile = researcher_profile.load()
+    profile_ctx = researcher_profile.to_context_string(profile)
+    library_ctx = _build_library_context()
+    base_context = (profile_ctx + "\n\n" if profile_ctx else "") + library_ctx
+
+    idea_context = (
+        f"The researcher is working on the following {'paper' if idea_type == 'paper' else 'grant'} idea:\n\n"
+        f"Title: {idea['title']}\n"
+        f"Description: {idea['description']}\n"
+    )
+
+    ws_tab1, ws_tab2, ws_tab3, ws_tab4 = st.tabs([
+        "Iterate", "Literature check",
+        "Skills & tools" if idea_type == "paper" else "Team & resources",
+        "Project plan" if idea_type == "paper" else "Impact & funding",
+    ])
+
+    # ---- Iterate ----
+    with ws_tab1:
+        st.markdown("Chat with Gemini to refine, reshape, or explore variations of this idea.")
+        history = idea.get("chat_history", [])
+        for msg in history:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+        user_input = st.chat_input("Refine or question this idea...", key=f"ws_chat_{iid}")
+        if user_input:
+            system = (
+                f"You are a research advisor helping develop and refine a {'paper' if idea_type == 'paper' else 'grant'} idea.\n\n"
+                + base_context + "\n\n" + idea_context
+            )
+            with st.chat_message("user"):
+                st.write(user_input)
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    reply = _assistant_call(system, history + [{"role": "user", "content": user_input}])
+                st.write(reply)
+            idea_store.append_chat(idea_type, iid, "user", user_input)
+            idea_store.append_chat(idea_type, iid, "assistant", reply)
+            # Refresh local copy
+            idea["chat_history"] = idea_store.get_idea(idea_type, iid).get("chat_history", [])
+        if history and st.button("Clear chat", key=f"ws_clearchat_{iid}"):
+            idea_store.update_idea(idea_type, iid, {"chat_history": []})
+            st.rerun()
+
+    # ---- Literature check ----
+    with ws_tab2:
+        st.markdown("Find what's already been done and clarify the gap this idea fills.")
+        fetch_fresh_lit = st.checkbox("Also fetch fresh ArXiv papers", value=True, key=f"ws_lit_fresh_{iid}")
+        if st.button("Run literature check", key=f"ws_lit_{iid}"):
+            fresh_ctx = ""
+            if fetch_fresh_lit:
+                with st.spinner("Fetching fresh ArXiv papers..."):
+                    try:
+                        results = st.session_state.arxiv.search(
+                            query=idea["title"], max_results=8, categories=[], date_from=None, author=""
+                        )
+                        if results:
+                            lines = ["\nFresh ArXiv papers related to this idea:\n"]
+                            for r in results:
+                                meta = st.session_state.arxiv.get_paper_metadata(r)
+                                lines.append(
+                                    f"- {meta['title']} — {', '.join(meta.get('authors', [])[:3])} "
+                                    f"({str(meta.get('published',''))[:10]})\n"
+                                    f"  {r.summary[:300].strip()}...\n"
+                                )
+                            fresh_ctx = "\n".join(lines)
+                    except Exception as e:
+                        st.warning(f"Could not fetch fresh papers: {e}")
+
+            system = "You are a research advisor performing a literature review.\n\n" + base_context + fresh_ctx
+            prompt = (
+                f"For the following idea:\n{idea_context}\n\n"
+                "Provide a structured literature check:\n\n"
+                "## What has already been done\n"
+                "Summarise the most relevant existing work from the library and fresh papers. Be specific — cite titles and authors.\n\n"
+                "## Key gap this idea addresses\n"
+                "What specifically has NOT been done? Why does the gap exist?\n\n"
+                "## Closest competing work\n"
+                "Which existing papers come closest to this idea? How would this work differentiate itself?\n\n"
+                "## Suggested papers to read\n"
+                "List the 5 most important papers to read before starting this project."
+            )
+            with st.spinner("Checking literature..."):
+                lit_review = _assistant_call(system, [{"role": "user", "content": prompt}])
+            idea_store.update_idea(idea_type, iid, {"lit_review": lit_review})
+            st.session_state[f"lit_review_{iid}"] = lit_review
+
+        saved_lit = idea.get("lit_review") or st.session_state.get(f"lit_review_{iid}")
+        if saved_lit:
+            st.markdown(saved_lit)
+
+    # ---- Skills & tools / Team & resources ----
+    with ws_tab3:
+        if idea_type == "paper":
+            st.markdown("Understand what skills and tools this project requires vs what you already have.")
+            if st.button("Analyse skills & tools", key=f"ws_skills_{iid}"):
+                system = "You are a research advisor helping a researcher assess the feasibility of a project.\n\n" + base_context
+                prompt = (
+                    f"For this paper idea:\n{idea_context}\n\n"
+                    "Provide a structured skills and tools breakdown:\n\n"
+                    "## Skills & tools the researcher already has\n"
+                    "Based on their profile, what relevant expertise do they bring?\n\n"
+                    "## Skills & tools they would need to develop or acquire\n"
+                    "What gaps exist? How significant are they?\n\n"
+                    "## Software and data requirements\n"
+                    "What specific codes, pipelines, or datasets are needed? Are they publicly available?\n\n"
+                    "## Potential collaborators\n"
+                    "What expertise would be valuable to bring in? Any obvious groups to approach?\n\n"
+                    "## Overall feasibility assessment\n"
+                    "Is this realistic given the researcher's current profile? What's the biggest risk?"
+                )
+                with st.spinner("Analysing..."):
+                    skills = _assistant_call(system, [{"role": "user", "content": prompt}])
+                idea_store.update_idea(idea_type, iid, {"skills_review": skills})
+                st.session_state[f"skills_{iid}"] = skills
+
+            saved_skills = idea.get("skills_review") or st.session_state.get(f"skills_{iid}")
+            if saved_skills:
+                st.markdown(saved_skills)
+
+        else:  # grant
+            st.markdown("Assess the team, resources, and infrastructure needed for this grant.")
+            if st.button("Analyse team & resources", key=f"ws_team_{iid}"):
+                system = "You are a grant advisor helping a researcher plan a funding application.\n\n" + base_context
+                prompt = (
+                    f"For this grant idea:\n{idea_context}\n\n"
+                    "Provide a structured team and resources assessment:\n\n"
+                    "## Core team required\n"
+                    "What roles are needed (PI, postdocs, students, collaborators)? What expertise?\n\n"
+                    "## Infrastructure and data\n"
+                    "What computing, instruments, or datasets are required? What exists vs needs funding?\n\n"
+                    "## Budget considerations\n"
+                    "What are the major cost drivers? Any rough estimates?\n\n"
+                    "## Existing strengths\n"
+                    "Based on the researcher's profile, what do they already bring to this grant?\n\n"
+                    "## Key gaps to address before applying\n"
+                    "What partnerships, preliminary results, or infrastructure need to be in place first?"
+                )
+                with st.spinner("Analysing..."):
+                    team = _assistant_call(system, [{"role": "user", "content": prompt}])
+                idea_store.update_idea(idea_type, iid, {"team_review": team})
+                st.session_state[f"team_{iid}"] = team
+
+            saved_team = idea.get("team_review") or st.session_state.get(f"team_{iid}")
+            if saved_team:
+                st.markdown(saved_team)
+
+    # ---- Project plan / Impact & funding ----
+    with ws_tab4:
+        if idea_type == "paper":
+            st.markdown("Break this project into milestones with a realistic timeline.")
+            if st.button("Generate project plan", key=f"ws_plan_{iid}"):
+                system = "You are a research advisor helping plan a research project.\n\n" + base_context
+                prompt = (
+                    f"For this paper idea:\n{idea_context}\n\n"
+                    "Generate a concrete project plan:\n\n"
+                    "## Milestones\n"
+                    "Break the project into 4-6 concrete milestones with rough timeframes.\n\n"
+                    "## Key decision points\n"
+                    "Where might the project pivot or fail? What are the go/no-go criteria?\n\n"
+                    "## Minimum viable paper\n"
+                    "What is the smallest version of this project that still produces a publishable result?\n\n"
+                    "## Target journals\n"
+                    "What journals would be appropriate for this work? Why?\n\n"
+                    "## Overall timeline estimate\n"
+                    "Realistic best case, expected, and worst case timelines."
+                )
+                with st.spinner("Planning..."):
+                    plan = _assistant_call(system, [{"role": "user", "content": prompt}])
+                idea_store.update_idea(idea_type, iid, {"project_plan": plan})
+                st.session_state[f"plan_{iid}"] = plan
+
+            saved_plan = idea.get("project_plan") or st.session_state.get(f"plan_{iid}")
+            if saved_plan:
+                st.markdown(saved_plan)
+
+        else:  # grant
+            st.markdown("Develop the impact statement and identify suitable funding bodies.")
+            if st.button("Generate impact & funding analysis", key=f"ws_impact_{iid}"):
+                system = (
+                    "You are a highly experienced grant advisor who has helped researchers win ERC, UKRI, ARC, "
+                    "NASA, and NSF grants. You write with ambition and clarity.\n\n" + base_context
+                )
+                prompt = (
+                    f"For this grant idea:\n{idea_context}\n\n"
+                    "Provide a detailed funding and impact analysis:\n\n"
+                    "## Vision statement\n"
+                    "Write a compelling 200-word vision statement as it might appear in the opening of a grant proposal. "
+                    "Make it bold, clear, and memorable. Avoid jargon where possible.\n\n"
+                    "## Scientific significance\n"
+                    "What fundamental question does this address? What changes in the field if it succeeds? "
+                    "Be specific about the scientific stakes.\n\n"
+                    "## Broader impact\n"
+                    "Societal, technological, multimessenger, or cross-disciplinary relevance. "
+                    "Include potential downstream applications or public interest angles.\n\n"
+                    "## Most suitable funding schemes\n"
+                    "List 5-7 specific, named funding schemes with country/agency, typical budget range, "
+                    "duration, and why this idea is a strong fit for each. Include both fellowship-style "
+                    "and programme/project grant options.\n\n"
+                    "## Competitive landscape\n"
+                    "Who are the 3-5 strongest competing groups globally? How does this proposal differentiate? "
+                    "What is the 'only you' argument?\n\n"
+                    "## Key preliminary results needed\n"
+                    "What proof-of-concept results should the researcher generate before submitting? "
+                    "What would make reviewers confident this is achievable?"
+                )
+                with st.spinner("Analysing..."):
+                    impact = _assistant_call(system, [{"role": "user", "content": prompt}])
+                idea_store.update_idea(idea_type, iid, {"impact_review": impact})
+                st.session_state[f"impact_{iid}"] = impact
+
+            saved_impact = idea.get("impact_review") or st.session_state.get(f"impact_{iid}")
+            if saved_impact:
+                st.markdown(saved_impact)
+
+    # Notes
+    st.markdown("---")
+    st.markdown("**Personal notes**")
+    notes = st.text_area("Notes", value=idea.get("notes", ""), key=f"ws_notes_{iid}", height=100, label_visibility="collapsed")
+    if st.button("Save notes", key=f"ws_savenotes_{iid}"):
+        idea_store.update_idea(idea_type, iid, {"notes": notes})
+        st.success("Notes saved.")
+
+
+def _render_ideas_tab(idea_type: str):
+    """Render the full ideas tab for paper or grant ideas."""
+    label = "Paper" if idea_type == "paper" else "Grant"
+    st.header(f"{label} Ideas")
+
+    profile = researcher_profile.load()
+    profile_ctx = researcher_profile.to_context_string(profile)
+    library_ctx = _build_library_context()
+    base_context = (profile_ctx + "\n\n" if profile_ctx else "") + library_ctx
+
+    # ---- Generate new idea ----
+    with st.expander("Generate new idea", expanded=not idea_store.load_ideas(idea_type)):
+        col1, col2 = st.columns(2)
+        topic = col1.text_input(
+            "Topic / focus area",
+            placeholder="e.g., kilonovae light curve modelling" if idea_type == "paper" else "e.g., multimessenger transient astronomy",
+            key=f"{idea_type}_gen_topic",
+        )
+        profile_tools = profile.get("methods_and_tools", "")
+        specialities = col2.text_input(
+            "Your specialities / tools",
+            value=profile_tools,
+            placeholder="e.g., Bayesian inference, redback, MCMC",
+            key=f"{idea_type}_gen_spec",
+        )
+        n_ideas = st.slider("Number of ideas to generate", 1, 5, 3, key=f"{idea_type}_n_ideas")
+        fetch_fresh = st.checkbox("Fetch fresh ArXiv papers on this topic", value=True, key=f"{idea_type}_fetch_fresh")
+
+        if st.button(f"Generate {label.lower()} ideas", type="primary", key=f"{idea_type}_gen_btn"):
+            if not topic.strip():
+                st.warning("Please enter a topic.")
+            else:
+                fresh_ctx = ""
+                if fetch_fresh:
+                    with st.spinner("Fetching latest ArXiv papers..."):
+                        try:
+                            results = st.session_state.arxiv.search(
+                                query=topic.strip(), max_results=10, categories=[], date_from=None, author=""
+                            )
+                            if results:
+                                lines = [f"\nLatest ArXiv papers on '{topic}':\n"]
+                                for r in results:
+                                    meta = st.session_state.arxiv.get_paper_metadata(r)
+                                    lines.append(
+                                        f"- {meta['title']} — {', '.join(meta.get('authors', [])[:3])} "
+                                        f"({str(meta.get('published',''))[:10]})\n"
+                                        f"  {r.summary[:350].strip()}...\n"
+                                    )
+                                fresh_ctx = "\n".join(lines)
+                        except Exception as e:
+                            st.warning(f"Could not fetch ArXiv papers: {e}")
+
+                spec_clause = f"Researcher specialities: {specialities}.\n" if specialities.strip() else ""
+
+                if idea_type == "paper":
+                    prompt = (
+                        f"Propose {n_ideas} specific, novel paper ideas on: **{topic}**.\n"
+                        f"{spec_clause}\n"
+                        "For each idea output EXACTLY this format (use the exact headers):\n\n"
+                        "### TITLE: <concise paper title>\n"
+                        "### DESCRIPTION: <2-3 sentences: what you'd do, key method, expected result>\n"
+                        "### MOTIVATION: <why this is timely and important>\n"
+                        "### NOVELTY: <what makes it distinct from existing work>\n"
+                        "---\n\n"
+                        "Be specific and concrete. Avoid vague suggestions.\n\n"
+                        + base_context + fresh_ctx
+                    )
+                else:
+                    prompt = (
+                        f"Propose {n_ideas} ambitious, fundable research programme ideas centred on: **{topic}**.\n"
+                        f"{spec_clause}\n\n"
+                        "These should be ideas that could anchor a major fellowship or programme grant — "
+                        "ERC Starting/Consolidator, UKRI Future Leaders Fellowship, ARC DECRA/Future Fellowship, "
+                        "NASA ATP, NSF CAREER, Royal Society URF, or similar. "
+                        "Think boldly. A strong grant answers: why this question, why you, why now, why does it matter. "
+                        "It should be scientifically transformative — not just the next incremental paper — "
+                        "involving multiple interconnected work packages over 3-5 years with a small team.\n\n"
+                        "For each idea output EXACTLY this format:\n\n"
+                        "### TITLE: <bold, memorable programme title>\n"
+                        "### DESCRIPTION: <4-5 sentences covering: overarching vision, 2-3 concrete work packages, "
+                        "key deliverables, and why this requires a programme not just a single paper>\n"
+                        "### MOTIVATION: <the big open question this addresses — field-defining scale. "
+                        "What fundamentally changes in the field if this succeeds?>\n"
+                        "### NOVELTY: <what makes this distinctive and fundable only by this researcher — "
+                        "unique combination of expertise, timing, methods, data access, or perspective>\n"
+                        "---\n\n"
+                        "Do not propose safe or obvious ideas. Aim for ideas a review panel would remember.\n\n"
+                        + base_context + fresh_ctx
+                    )
+
+                system = (
+                    "You are a highly experienced research grant advisor who has helped astrophysicists win "
+                    "major fellowships and programme grants at ERC, UKRI, ARC, NASA, and NSF level. "
+                    "You understand what review panels look for: bold scientific vision, clear feasibility, "
+                    "a compelling narrative, and a strong 'only you can do this' argument. "
+                    "You do not produce safe or incremental ideas — you push researchers to think bigger."
+                )
+                with st.spinner("Generating ideas..."):
+                    raw = _assistant_call(system, [{"role": "user", "content": prompt}])
+
+                # Parse ideas from response and offer save buttons
+                st.session_state[f"{idea_type}_gen_raw"] = raw
+                st.session_state[f"{idea_type}_gen_parsed"] = _parse_ideas(raw)
+
+        # Show generated ideas with save buttons
+        if st.session_state.get(f"{idea_type}_gen_parsed"):
+            parsed = st.session_state[f"{idea_type}_gen_parsed"]
+            st.markdown("---")
+            for i, idea in enumerate(parsed):
+                with st.container():
+                    st.markdown(f"**{idea['title']}**")
+                    st.markdown(idea["description"])
+                    save_col, _ = st.columns([1, 4])
+                    if save_col.button("Save this idea", key=f"{idea_type}_save_{i}"):
+                        idea_store.save_idea(idea_type, idea["title"], idea["description"] + "\n\n**Motivation:** " + idea.get("motivation", "") + "\n\n**Novelty:** " + idea.get("novelty", ""))
+                        st.success(f"Saved: {idea['title']}")
+                    st.markdown("---")
+
+    # ---- Saved ideas ----
+    saved = idea_store.load_ideas(idea_type)
+    if not saved:
+        st.info(f"No saved {label.lower()} ideas yet. Generate some above.")
+        return
+
+    st.markdown(f"### Saved {label} Ideas ({len(saved)})")
+
+    # Status filter
+    statuses = ["all", "draft", "active", "archived"]
+    status_filter = st.selectbox("Filter by status:", statuses, key=f"{idea_type}_status_filter")
+
+    for idea in sorted(saved, key=lambda x: x.get("created", ""), reverse=True):
+        if status_filter != "all" and idea.get("status") != status_filter:
+            continue
+
+        status = idea.get("status", "draft")
+        status_emoji = {"draft": "📝", "active": "🔬", "archived": "📦"}.get(status, "📝")
+        created = idea.get("created", "")[:10]
+
+        with st.expander(f"{status_emoji} **{idea['title']}** — {status} · {created}", expanded=False):
+            # Status control
+            scol1, scol2 = st.columns([2, 3])
+            new_status = scol1.selectbox(
+                "Status", ["draft", "active", "archived"],
+                index=["draft", "active", "archived"].index(status),
+                key=f"{idea_type}_status_{idea['id']}",
+            )
+            if new_status != status:
+                idea_store.update_idea(idea_type, idea["id"], {"status": new_status})
+
+            if scol2.button("Delete idea", key=f"{idea_type}_del_{idea['id']}"):
+                idea_store.delete_idea(idea_type, idea["id"])
+                st.rerun()
+
+            st.markdown(idea.get("description", ""))
+            st.markdown("---")
+            _idea_workspace(idea_type, idea)
+
+
+def _parse_ideas(raw: str) -> List[Dict]:
+    """Parse structured ideas from LLM output."""
+    ideas = []
+    # Split on --- separator
+    blocks = [b.strip() for b in raw.split("---") if b.strip()]
+    for block in blocks:
+        idea = {"title": "", "description": "", "motivation": "", "novelty": ""}
+        for line in block.split("\n"):
+            for key, prefix in [("title", "### TITLE:"), ("description", "### DESCRIPTION:"),
+                                  ("motivation", "### MOTIVATION:"), ("novelty", "### NOVELTY:")]:
+                if line.startswith(prefix):
+                    idea[key] = line[len(prefix):].strip()
+        if idea["title"]:
+            ideas.append(idea)
+    return ideas
+
+
+def render_paper_ideas():
+    _render_ideas_tab("paper")
+
+
+def render_grant_ideas():
+    _render_ideas_tab("grant")
+
+
 def main():
     init_session_state()
     render_header()
 
-    query, categories, max_results, date_from = render_sidebar()
+    query, author, categories, max_results, date_from = render_sidebar()
 
-    if query is not None:  # None means button was not pressed
-        render_search_results(query, categories, max_results, date_from)
+    if query is not None:  # None means Search button was not pressed
+        render_search_results(query, author, categories, max_results, date_from)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Semantic Search", "Knowledge Graph", "Library", "Schedule"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        "Semantic Search", "Knowledge Graph", "Library",
+        "Assistant", "Paper Ideas", "Grant Ideas",
+        "Schedule", "Profile",
+    ])
 
     with tab1:
         render_vector_search()
@@ -581,7 +1717,15 @@ def main():
     with tab3:
         render_papers_list()
     with tab4:
+        render_assistant()
+    with tab5:
+        render_paper_ideas()
+    with tab6:
+        render_grant_ideas()
+    with tab7:
         render_schedule()
+    with tab8:
+        render_profile()
 
 
 if __name__ == "__main__":

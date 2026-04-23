@@ -35,3 +35,45 @@ def load_all_papers() -> List[Dict]:
 
 def paper_exists(paper_id: str) -> bool:
     return paper_id in _load()
+
+
+def delete_paper(paper_id: str):
+    """Remove a paper from the JSON store."""
+    data = _load()
+    data.pop(paper_id, None)
+    _save(data)
+
+
+def delete_paper(paper_id: str):
+    """Remove a paper from the JSON store."""
+    data = _load()
+    data.pop(paper_id, None)
+    _save(data)
+
+
+def search_by_author(author_query: str) -> List[Dict]:
+    """Return papers where any author name contains the query (case-insensitive)."""
+    q = author_query.lower().strip()
+    results = []
+    for paper in _load().values():
+        authors = paper.get("authors", [])
+        if isinstance(authors, str):
+            authors = [a.strip() for a in authors.split(",")]
+        if any(q in a.lower() for a in authors):
+            results.append(paper)
+    return results
+
+
+def search_by_text(text_query: str) -> List[Dict]:
+    """Full-text search across title, summary, and abstract (case-insensitive)."""
+    q = text_query.lower().strip()
+    results = []
+    for paper in _load().values():
+        haystack = " ".join([
+            paper.get("title", ""),
+            paper.get("summary", ""),
+            paper.get("abstract", ""),
+        ]).lower()
+        if q in haystack:
+            results.append(paper)
+    return results
