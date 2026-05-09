@@ -80,16 +80,15 @@ def render_sidebar():
     """Render sidebar search controls. Returns (query, author, categories, max_results, date_from) or Nones."""
     st.sidebar.header("Search & Filters")
 
-    # Pre-populate query from profile research areas on first load
-    profile = researcher_profile.load()
-    default_query = ""
-    if not st.session_state.get("sidebar_query_initialised") and profile.get("research_areas"):
-        # Use first research area as a default hint (not auto-submitted, just pre-filled)
-        first_area = profile["research_areas"].split(",")[0].strip()
-        default_query = first_area
-        st.session_state["sidebar_query_initialised"] = True
+    DEFAULT_QUERY = "neutron star mergers OR kilonovae OR GRBs OR TDEs OR neutron stars OR gravitational waves OR supernovae OR FXTs"
+    DEFAULT_CATEGORIES = ["astro-ph.HE"]
 
-    query = st.sidebar.text_input("Search query", value=default_query, placeholder="e.g., neutron star merger")
+    if not st.session_state.get("sidebar_query_initialised"):
+        st.session_state["sidebar_query_initialised"] = True
+        st.session_state["sidebar_default_query"] = DEFAULT_QUERY
+        st.session_state["sidebar_default_cats"] = DEFAULT_CATEGORIES
+
+    query = st.sidebar.text_input("Search query", value=st.session_state.get("sidebar_default_query", DEFAULT_QUERY), placeholder="e.g., neutron star merger")
     author = st.sidebar.text_input("Author", placeholder="e.g., Sarin or Nikhil Sarin")
 
     st.sidebar.markdown("**Categories**")
@@ -101,7 +100,7 @@ def render_sidebar():
             "physics.hep-th", "gr-qc",
             "q-bio.QM", "q-fin.CP",
         ],
-        default=[],
+        default=st.session_state.get("sidebar_default_cats", DEFAULT_CATEGORIES),
     )
 
     max_results = st.sidebar.slider("Max results", 5, 100, 20)

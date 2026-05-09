@@ -8,24 +8,14 @@ Supported providers (set via SUMMARIZER_PROVIDER env var):
 """
 
 import os
-import time
 import requests
 from typing import Optional
 
 
 def _gemini_post(url: str, api_key: str, payload: dict, timeout: int = 120) -> dict:
-    """POST to Gemini API with exponential backoff on 429."""
-    delay = 10
-    for attempt in range(5):
-        response = requests.post(url, params={"key": api_key}, json=payload, timeout=timeout)
-        if response.status_code == 429:
-            print(f"[summarizer] Gemini 429 — waiting {delay}s before retry {attempt + 1}/5")
-            time.sleep(delay)
-            delay = min(delay * 2, 60)
-            continue
-        response.raise_for_status()
-        return response.json()
-    response.raise_for_status()  # raise after final attempt
+    """POST to Gemini API."""
+    response = requests.post(url, params={"key": api_key}, json=payload, timeout=timeout)
+    response.raise_for_status()
     return response.json()
 
 
