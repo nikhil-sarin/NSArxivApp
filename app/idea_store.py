@@ -38,6 +38,7 @@ def save_idea(idea_type: str, title: str, description: str, extra: Optional[Dict
         "status": "draft",
         "created": datetime.now().isoformat(),
         "chat_history": [],
+        "linked_papers": [],
         "notes": "",
         **(extra or {}),
     }
@@ -71,4 +72,18 @@ def append_chat(idea_type: str, idea_id: str, role: str, content: str):
     if idea_id in data[idea_type]:
         data[idea_type][idea_id].setdefault("chat_history", [])
         data[idea_type][idea_id]["chat_history"].append({"role": role, "content": content})
+        _save(data)
+
+
+def set_linked_papers(idea_type: str, idea_id: str, paper_ids: List[str]):
+    """Replace the papers linked to an idea."""
+    data = _load()
+    if idea_id in data[idea_type]:
+        seen = set()
+        clean_ids = []
+        for paper_id in paper_ids:
+            if paper_id and paper_id not in seen:
+                clean_ids.append(paper_id)
+                seen.add(paper_id)
+        data[idea_type][idea_id]["linked_papers"] = clean_ids
         _save(data)

@@ -6,7 +6,7 @@ import json
 import streamlit as st
 import pandas as pd
 import networkx as nx
-import plotly.express as px
+import plotly.graph_objects as go
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
@@ -180,6 +180,93 @@ def _authors_str(paper: Dict, max_shown: int = 3) -> str:
     return shown
 
 
+def _paper_label(paper: Dict) -> str:
+    """Compact title/ID label for selectors."""
+    pid = paper.get("arxiv_id", paper.get("id", ""))
+    title = paper.get("title", pid)
+    return f"{title[:95]} [{pid}]"
+
+
+def _notes_lines(paper: Dict) -> List[str]:
+    """Return populated structured-note lines for assistant contexts."""
+    notes = paper.get("research_notes", {})
+    if not isinstance(notes, dict):
+        return []
+    labels = {
+        "key_result": "Key result",
+        "why_i_care": "Why I care",
+        "cite_for": "Cite for",
+        "caveats": "Caveats",
+        "follow_up": "Follow-up questions",
+    }
+    lines = []
+    for key, label in labels.items():
+        value = str(notes.get(key, "")).strip()
+        if value:
+            lines.append(f"{label}: {value}")
+    return lines
+
+
+def _format_notes_for_display(paper: Dict) -> str:
+    lines = _notes_lines(paper)
+    return "\n".join(f"- {line}" for line in lines)
+
+
+def render_paper_notes(pid: str):
+    """Render editable citation-aware notes for a stored paper."""
+    notes = paper_store.get_notes(pid)
+    with st.form(f"notes_form_{pid}", clear_on_submit=False):
+        st.markdown("**Citation-aware notes**")
+        key_result = st.text_area(
+            "Key result",
+            value=notes["key_result"],
+            placeholder="The result I would quote when citing this paper...",
+            height=70,
+            key=f"notes_key_result_{pid}",
+        )
+        why_i_care = st.text_area(
+            "Why I care",
+            value=notes["why_i_care"],
+            placeholder="How this connects to my work or project...",
+            height=70,
+            key=f"notes_why_{pid}",
+        )
+        cite_for = st.text_area(
+            "Cite for",
+            value=notes["cite_for"],
+            placeholder="Methods, data, claim, comparison, background...",
+            height=70,
+            key=f"notes_cite_for_{pid}",
+        )
+        caveats = st.text_area(
+            "Caveats",
+            value=notes["caveats"],
+            placeholder="Limitations, assumptions, possible failure modes...",
+            height=70,
+            key=f"notes_caveats_{pid}",
+        )
+        follow_up = st.text_area(
+            "Follow-up questions",
+            value=notes["follow_up"],
+            placeholder="Questions to answer before relying on this paper...",
+            height=70,
+            key=f"notes_follow_up_{pid}",
+        )
+        if st.form_submit_button("Save notes"):
+            paper_store.save_notes(
+                pid,
+                {
+                    "key_result": key_result,
+                    "why_i_care": why_i_care,
+                    "cite_for": cite_for,
+                    "caveats": caveats,
+                    "follow_up": follow_up,
+                },
+            )
+            st.session_state.papers = paper_store.load_all_papers()
+            st.success("Notes saved.")
+
+
 def render_paper_card(paper: Dict, show_actions: bool = True):
     with st.expander(f"**{paper['title']}**", expanded=False):
         col1, col2 = st.columns([3, 1])
@@ -191,6 +278,10 @@ def render_paper_card(paper: Dict, show_actions: bool = True):
             st.caption(f"Categories: {' | '.join(paper.get('categories', []))}")
             st.markdown("**Summary**")
             st.write(paper.get("summary", "No summary available."))
+            note_summary = _format_notes_for_display(paper)
+            if note_summary:
+                st.markdown("**Research notes**")
+                st.markdown(note_summary)
         with col2:
             pid = paper.get("arxiv_id", paper.get("id", ""))
             if pid:
@@ -398,25 +489,20 @@ def render_multi_paper_chat():
     if st.session_state.get(f"{context_key}_ids") != context_ids:
         with st.spinner("Loading paper texts..."):
             parts = []
+            has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
             for p in selected_papers:
                 pid = p.get("arxiv_id", "")
                 text = _get_paper_text(pid, p)
-                if len(text) > 15000:
-                    text = text[:15000] + "\n...[truncated]"
-                parts.append(
-                    f"=== Paper: {p.get('title', pid)} ===\n"
-                    f"Authors: {_authors_str(p)}\n"
-                    f"Published: {p.get('published', '')}\n\n"
-                    f"{text}"
-                )
+                parts.append(_paper_source_context(pid, p, text, max_chunks=None if has_gemini else 4))
             st.session_state[context_key] = "\n\n".join(parts)
             st.session_state[f"{context_key}_ids"] = context_ids
 
     system_prompt = (
-        "You are a research assistant. You have read the following academic papers.\n\n"
+        "You are a research assistant. You have read the following academic paper sources. "
+        "Answer accurately using the supplied source chunks. Cite evidence for substantive claims using labels "
+        "like [arXiv:2301.12345 chunk 2]. If something is not covered in the sources, say so.\n\n"
         f"{st.session_state[context_key]}\n\n"
-        "Answer questions about these papers accurately. When comparing papers, be specific "
-        "about which paper you are referring to. If something is not covered in the texts, say so."
+        "When comparing papers, be specific about which paper you are referring to."
     )
 
     history = st.session_state.get("multi_chat_history", [])
@@ -432,7 +518,7 @@ def render_multi_paper_chat():
             with st.spinner("Thinking..."):
                 messages = history + [{"role": "user", "content": user_input}]
                 try:
-                    reply = st.session_state.summarizer._dispatch_chat(system_prompt, messages)
+                    reply = st.session_state.summarizer.dispatch_chat_gemini(system_prompt, messages)
                 except Exception as e:
                     reply = f"Error: {e}"
             st.write(reply)
@@ -465,37 +551,162 @@ def render_vector_search():
 
 def render_knowledge_graph():
     st.header("Knowledge Graph")
-    if st.button("Visualize Connections"):
-        all_ids = st.session_state.kg.get_all_paper_ids()
-        if len(all_ids) < 2:
-            st.info("Add more papers to see connections.")
+    papers = paper_store.load_all_papers()
+    if len(papers) < 2:
+        st.info("Add more papers to see connections.")
+        return
+
+    df = pd.DataFrame(papers)
+    all_cats = sorted(df["categories"].explode().dropna().unique().tolist()) if "categories" in df.columns else []
+
+    ctrl1, ctrl2, ctrl3 = st.columns(3)
+    max_nodes = ctrl1.slider("Papers shown", 2, min(100, len(papers)), min(40, len(papers)))
+    selected_cats = ctrl2.multiselect("Filter categories", options=all_cats, default=[])
+    edge_types = ctrl3.multiselect(
+        "Connection types",
+        ["shared category", "shared author", "semantic similarity"],
+        default=["shared category", "shared author", "semantic similarity"],
+    )
+    sim_threshold = st.slider("Minimum semantic similarity", 0.10, 0.95, 0.55, 0.05)
+
+    filtered = papers
+    if selected_cats:
+        filtered = [
+            p for p in papers
+            if any(cat in (p.get("categories", []) if isinstance(p.get("categories"), list) else []) for cat in selected_cats)
+        ]
+    if not filtered:
+        st.info("No papers match the selected graph filters.")
+        return
+
+    filtered = sorted(filtered, key=lambda p: str(p.get("published", "")), reverse=True)[:max_nodes]
+    paper_by_id = {p.get("arxiv_id", p.get("id", "")): p for p in filtered if p.get("arxiv_id", p.get("id", ""))}
+
+    G = nx.Graph()
+    for pid, paper in paper_by_id.items():
+        G.add_node(pid, title=paper.get("title", pid), paper=paper)
+
+    def add_edge(a: str, b: str, reason: str, weight: float = 1.0):
+        if a == b or a not in G or b not in G:
             return
+        if G.has_edge(a, b):
+            G[a][b]["reasons"].append(reason)
+            G[a][b]["weight"] = max(G[a][b]["weight"], weight)
+        else:
+            G.add_edge(a, b, reasons=[reason], weight=weight)
 
-        G = st.session_state.kg.graph
-        nodes = list(G.nodes())[:50]
-        subgraph = G.subgraph(nodes)
-        degrees = dict(subgraph.degree())
+    ids = list(paper_by_id.keys())
+    if "shared category" in edge_types:
+        for i, pid in enumerate(ids):
+            cats = set(paper_by_id[pid].get("categories", []) or [])
+            for other in ids[i + 1:]:
+                shared = cats.intersection(set(paper_by_id[other].get("categories", []) or []))
+                if shared:
+                    add_edge(pid, other, "category: " + ", ".join(sorted(shared)[:3]), weight=0.7)
 
-        node_df = pd.DataFrame({
-            "id": list(subgraph.nodes()),
-            "size": [max(degrees[n] * 500, 100) for n in subgraph.nodes()],
-            "label": [G.nodes[n].get("title", n)[:40] for n in subgraph.nodes()],
-        })
-        edges = list(subgraph.edges())
+    if "shared author" in edge_types:
+        for i, pid in enumerate(ids):
+            authors = set(paper_by_id[pid].get("authors", []) or [])
+            for other in ids[i + 1:]:
+                shared = authors.intersection(set(paper_by_id[other].get("authors", []) or []))
+                if shared:
+                    add_edge(pid, other, "author: " + ", ".join(sorted(shared)[:3]), weight=1.0)
 
-        fig = px.treemap(
-            node_df,
-            path=["id"],
-            values="size",
-            color_continuous_scale="Viridis",
-            title="Paper Connections (by category / author)",
+    if "semantic similarity" in edge_types:
+        with st.spinner("Adding semantic similarity edges..."):
+            for pid in ids:
+                vec = st.session_state.vdb.get_embedding(pid)
+                if vec is None:
+                    continue
+                for result in st.session_state.vdb.search_by_vector(vec, top_k=5, exclude_id=pid):
+                    other = result["id"]
+                    if other not in paper_by_id:
+                        continue
+                    score = 1 - result.get("distance", 1)
+                    if score >= sim_threshold:
+                        add_edge(pid, other, f"semantic similarity: {score:.2f}", weight=score)
+
+    if G.number_of_edges() == 0:
+        st.info("No connections found with the selected filters.")
+        return
+
+    pos = nx.spring_layout(G, seed=7, weight="weight", k=0.75)
+    edge_x, edge_y = [], []
+    for source, target in G.edges():
+        x0, y0 = pos[source]
+        x1, y1 = pos[target]
+        edge_x += [x0, x1, None]
+        edge_y += [y0, y1, None]
+
+    edge_trace = go.Scatter(
+        x=edge_x,
+        y=edge_y,
+        line=dict(width=0.8, color="#9aa0a6"),
+        hoverinfo="none",
+        mode="lines",
+    )
+
+    degrees = dict(G.degree())
+    node_x, node_y, node_text, node_size, node_color = [], [], [], [], []
+    for node in G.nodes():
+        x, y = pos[node]
+        paper = paper_by_id[node]
+        node_x.append(x)
+        node_y.append(y)
+        node_size.append(14 + degrees[node] * 3)
+        node_color.append(degrees[node])
+        node_text.append(
+            f"<b>{paper.get('title', node)}</b><br>"
+            f"{_authors_str(paper, max_shown=4)}<br>"
+            f"{node}<br>"
+            f"Connections: {degrees[node]}"
         )
-        st.plotly_chart(fig, use_container_width=True)
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Papers shown", len(nodes))
-        col2.metric("Connections", len(edges))
-        col3.metric("Avg connections", f"{len(edges)/len(nodes):.1f}" if nodes else "0")
+    node_trace = go.Scatter(
+        x=node_x,
+        y=node_y,
+        mode="markers",
+        hoverinfo="text",
+        text=node_text,
+        marker=dict(
+            showscale=True,
+            colorscale="Viridis",
+            color=node_color,
+            size=node_size,
+            colorbar=dict(title="Degree"),
+            line_width=1,
+        ),
+    )
+
+    fig = go.Figure(
+        data=[edge_trace, node_trace],
+        layout=go.Layout(
+            height=650,
+            margin=dict(l=0, r=0, t=20, b=0),
+            showlegend=False,
+            hovermode="closest",
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        ),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Papers shown", G.number_of_nodes())
+    col2.metric("Connections", G.number_of_edges())
+    col3.metric("Avg connections", f"{2 * G.number_of_edges() / G.number_of_nodes():.1f}")
+
+    edge_rows = []
+    for source, target, data in G.edges(data=True):
+        edge_rows.append({
+            "source": paper_by_id[source].get("title", source),
+            "target": paper_by_id[target].get("title", target),
+            "reason": "; ".join(data.get("reasons", [])),
+            "source_arxiv": f"https://arxiv.org/abs/{source}",
+            "target_arxiv": f"https://arxiv.org/abs/{target}",
+        })
+    with st.expander("Connection table", expanded=False):
+        st.dataframe(pd.DataFrame(edge_rows), use_container_width=True, hide_index=True)
 
 
 def _get_paper_text(pid: str, paper: Dict) -> str:
@@ -517,6 +728,37 @@ def _get_paper_text(pid: str, paper: Dict) -> str:
             return ""
         pdf_path = st.session_state.arxiv.get_pdf_path(result)
     return st.session_state.pdf_extractor.extract_text(pdf_path)
+
+
+def _source_chunks(text: str, source_label: str, chunk_chars: int = 3500, max_chunks: Optional[int] = None) -> str:
+    """Add stable source labels to paper text so chat answers can cite evidence."""
+    cleaned = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
+    if not cleaned:
+        return f"[{source_label} chunk 1]\nNo paper text was available."
+
+    chunks = []
+    for idx, start in enumerate(range(0, len(cleaned), chunk_chars), start=1):
+        if max_chunks is not None and idx > max_chunks:
+            chunks.append(f"[{source_label} omitted]\nAdditional text omitted because of context limits.")
+            break
+        chunk = cleaned[start:start + chunk_chars]
+        chunks.append(f"[{source_label} chunk {idx}]\n{chunk}")
+    return "\n\n".join(chunks)
+
+
+def _paper_source_context(pid: str, paper: Dict, text: str, max_chunks: Optional[int] = None) -> str:
+    """Build citation-ready context for one paper."""
+    notes = "\n".join(_notes_lines(paper))
+    source_label = f"arXiv:{pid}"
+    return (
+        f"=== Paper source: {source_label} ===\n"
+        f"Title: {paper.get('title', pid)}\n"
+        f"Authors: {_authors_str(paper)}\n"
+        f"Published: {paper.get('published', '')}\n"
+        + (f"Research notes:\n{notes}\n" if notes else "")
+        + "\n"
+        + _source_chunks(text, source_label, max_chunks=max_chunks)
+    )
 
 
 def _chat_with_paper(pid: str, paper: Dict, user_message: str) -> str:
@@ -542,15 +784,14 @@ def _chat_with_paper(pid: str, paper: Dict, user_message: str) -> str:
         char_limit = int(os.getenv("OLLAMA_NUM_CTX", "32768")) * 3
         if len(paper_text) > char_limit:
             paper_text = paper_text[:char_limit] + "\n...[truncated]"
+    max_chunks = None if has_gemini else 10
 
     system_prompt = (
-        f"You are a research assistant. You have read the following academic paper in full.\n\n"
-        f"Title: {paper.get('title', '')}\n"
-        f"Authors: {_authors_str(paper)}\n"
-        f"Published: {paper.get('published', '')}\n\n"
-        f"Paper text:\n{paper_text}\n\n"
-        f"Answer questions about this paper accurately and concisely. "
-        f"If something is not covered in the text, say so."
+        "You are a research assistant. Answer using only the supplied paper source unless the user explicitly asks "
+        "for outside knowledge. Cite evidence for substantive claims using the provided source labels, for example "
+        f"[arXiv:{pid} chunk 3]. If the source does not support an answer, say that clearly. "
+        "When useful, end with a short 'Evidence' section listing the cited chunks.\n\n"
+        + _paper_source_context(pid, paper, paper_text, max_chunks=max_chunks)
     )
 
     history_key = f"chat_history_{pid}"
@@ -735,6 +976,10 @@ def render_papers_list():
                 st.caption(f"Published: {paper.get('published', 'N/A')}")
                 st.markdown("**Summary**")
                 st.write(displayed_summary)
+                notes_text = _format_notes_for_display(paper)
+                if notes_text:
+                    st.markdown("**Saved research notes**")
+                    st.markdown(notes_text)
             with col2:
                 if pid:
                     st.markdown(f"[View on ArXiv](https://arxiv.org/abs/{pid})")
@@ -789,6 +1034,8 @@ def render_papers_list():
             if st.session_state.get(f"show_chat_{pid}", False):
                 st.markdown("---")
                 render_paper_chat(pid, paper)
+            st.markdown("---")
+            render_paper_notes(pid)
 
     st.markdown("---")
     data_dir = Path("data").resolve()
@@ -889,6 +1136,7 @@ def _build_library_context() -> str:
         published = str(p.get("published", ""))[:10]
         cats = ", ".join(p.get("categories", [])) if isinstance(p.get("categories"), list) else str(p.get("categories", ""))
         summary = p.get("summary", "").strip()
+        notes = "\n".join(_notes_lines(p))
         lines.append(
             f"---\n"
             f"ID: {pid}\n"
@@ -896,6 +1144,26 @@ def _build_library_context() -> str:
             f"Authors: {authors}\n"
             f"Published: {published}  Categories: {cats}\n"
             f"Summary: {summary}\n"
+            + (f"Research notes:\n{notes}\n" if notes else "")
+        )
+    return "\n".join(lines)
+
+
+def _build_selected_papers_context(papers: List[Dict], include_notes: bool = True) -> str:
+    """Build context from an explicit set of papers for lit reviews and project workspaces."""
+    lines = [f"Selected paper set ({len(papers)} papers):\n"]
+    for p in papers:
+        pid = p.get("arxiv_id", p.get("id", ""))
+        notes = "\n".join(_notes_lines(p)) if include_notes else ""
+        lines.append(
+            f"---\n"
+            f"ID: {pid}\n"
+            f"Title: {p.get('title', pid)}\n"
+            f"Authors: {_authors_str(p, max_shown=8)}\n"
+            f"Published: {str(p.get('published', ''))[:10]}\n"
+            f"Categories: {', '.join(p.get('categories', [])) if isinstance(p.get('categories'), list) else p.get('categories', '')}\n"
+            f"Summary: {p.get('summary', '')}\n"
+            + (f"Research notes:\n{notes}\n" if notes else "")
         )
     return "\n".join(lines)
 
@@ -906,6 +1174,89 @@ def _assistant_call(system: str, messages: list) -> str:
         return st.session_state.summarizer.dispatch_chat_gemini(system, messages)
     except Exception as e:
         return f"Error: {e}"
+
+
+def render_lit_review_builder():
+    st.header("Literature Review Builder")
+    papers = paper_store.load_all_papers()
+    if not papers:
+        st.info("Your library is empty. Search for papers first.")
+        return
+
+    options = {_paper_label(p): p for p in sorted(papers, key=lambda x: str(x.get("published", "")), reverse=True)}
+    selected_labels = st.multiselect(
+        "Papers to include",
+        options=list(options.keys()),
+        default=list(options.keys())[: min(6, len(options))],
+        key="lit_review_selected_papers",
+    )
+    selected = [options[label] for label in selected_labels]
+    if not selected:
+        st.info("Select at least one paper.")
+        return
+
+    col1, col2 = st.columns(2)
+    focus = col1.text_input(
+        "Review focus",
+        placeholder="e.g., kilonova opacity systematics, multimessenger constraints",
+        key="lit_review_focus",
+    )
+    review_type = col2.selectbox(
+        "Output",
+        [
+            "Structured literature review",
+            "Citation map",
+            "Introduction draft",
+            "Related work section",
+            "Reading synthesis",
+        ],
+        key="lit_review_type",
+    )
+    include_notes = st.checkbox("Use my citation-aware notes", value=True, key="lit_review_include_notes")
+
+    if st.button("Generate literature review", type="primary", key="generate_lit_review"):
+        profile_ctx = researcher_profile.to_context_string(researcher_profile.load())
+        paper_ctx = _build_selected_papers_context(selected, include_notes=include_notes)
+        focus_clause = f"Focus specifically on: {focus.strip()}." if focus.strip() else "Use the strongest common themes in the selected papers."
+        system = (
+            "You are a research assistant helping write accurate, useful literature reviews for an active researcher. "
+            "Use the selected papers and the user's notes as the source of truth. Be specific about paper titles and authors. "
+            "Do not invent claims that are not supported by the supplied summaries or notes.\n\n"
+            + (profile_ctx + "\n\n" if profile_ctx else "")
+            + paper_ctx
+        )
+        prompt = (
+            f"Generate a {review_type.lower()} in Markdown. {focus_clause}\n\n"
+            "Required structure:\n"
+            "## Scope\n"
+            "Define the topic and why these papers belong together.\n\n"
+            "## Main Claims and Evidence\n"
+            "Synthesize the central claims. Attribute claims to specific papers by title and author.\n\n"
+            "## Methods, Data, and Assumptions\n"
+            "Compare the methods or datasets used across the papers.\n\n"
+            "## Tensions and Caveats\n"
+            "Identify disagreements, limitations, or assumptions.\n\n"
+            "## How I Would Cite These Papers\n"
+            "Map each paper to the reason it should be cited.\n\n"
+            "## Open Questions\n"
+            "List concrete gaps that could motivate future work.\n\n"
+            "Keep the writing concise but publication-useful."
+        )
+        with st.spinner("Generating literature review..."):
+            review = _assistant_call(system, [{"role": "user", "content": prompt}])
+        st.session_state["last_lit_review"] = review
+        st.session_state["last_lit_review_title"] = focus.strip() or review_type
+
+    if st.session_state.get("last_lit_review"):
+        st.markdown("---")
+        st.markdown(st.session_state["last_lit_review"])
+        filename_stub = re.sub(r"[^a-zA-Z0-9]+", "_", st.session_state.get("last_lit_review_title", "literature_review")).strip("_").lower()
+        st.download_button(
+            "Download Markdown",
+            st.session_state["last_lit_review"],
+            file_name=f"{filename_stub or 'literature_review'}.md",
+            mime="text/markdown",
+        )
 
 
 def render_assistant():
@@ -1289,13 +1640,53 @@ def _idea_workspace(idea_type: str, idea: Dict):
     iid = idea["id"]
     profile = researcher_profile.load()
     profile_ctx = researcher_profile.to_context_string(profile)
-    library_ctx = _build_library_context()
-    base_context = (profile_ctx + "\n\n" if profile_ctx else "") + library_ctx
 
     idea_context = (
         f"The researcher is working on the following {'paper' if idea_type == 'paper' else 'grant'} idea:\n\n"
         f"Title: {idea['title']}\n"
         f"Description: {idea['description']}\n"
+    )
+
+    all_papers = paper_store.load_all_papers()
+    paper_by_id = {p.get("arxiv_id", p.get("id", "")): p for p in all_papers if p.get("arxiv_id", p.get("id", ""))}
+    label_by_id = {pid: _paper_label(paper) for pid, paper in paper_by_id.items()}
+    paper_by_label = {label: paper_by_id[pid] for pid, label in label_by_id.items()}
+    current_ids = [pid for pid in idea.get("linked_papers", []) if pid in paper_by_id]
+    current_labels = [label_by_id[pid] for pid in current_ids]
+
+    selected_labels = st.multiselect(
+        "Linked papers",
+        options=list(paper_by_label.keys()),
+        default=current_labels,
+        key=f"{idea_type}_linked_papers_{iid}",
+    )
+    selected_ids = [paper_by_label[label].get("arxiv_id", paper_by_label[label].get("id", "")) for label in selected_labels]
+    if selected_ids != current_ids:
+        idea_store.set_linked_papers(idea_type, iid, selected_ids)
+        idea["linked_papers"] = selected_ids
+        current_ids = selected_ids
+
+    linked_papers = [paper_by_id[pid] for pid in current_ids if pid in paper_by_id]
+    if linked_papers:
+        linked_rows = []
+        for paper in linked_papers:
+            notes = paper.get("research_notes", {}) if isinstance(paper.get("research_notes", {}), dict) else {}
+            linked_rows.append({
+                "title": paper.get("title", paper.get("arxiv_id", "")),
+                "arxiv_id": paper.get("arxiv_id", ""),
+                "cite_for": notes.get("cite_for", ""),
+                "key_result": notes.get("key_result", ""),
+            })
+        with st.expander("Linked paper context", expanded=False):
+            st.dataframe(pd.DataFrame(linked_rows), use_container_width=True, hide_index=True)
+
+    library_ctx = _build_library_context()
+    linked_ctx = _build_selected_papers_context(linked_papers, include_notes=True) if linked_papers else ""
+    base_context = (
+        (profile_ctx + "\n\n" if profile_ctx else "")
+        + (f"## Papers linked to this idea\n{linked_ctx}\n\n" if linked_ctx else "")
+        + "## Wider paper library\n"
+        + library_ctx
     )
 
     ws_tab1, ws_tab2, ws_tab3, ws_tab4 = st.tabs([
@@ -1703,9 +2094,9 @@ def main():
     if query is not None:  # None means Search button was not pressed
         render_search_results(query, author, categories, max_results, date_from)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "Semantic Search", "Knowledge Graph", "Library",
-        "Assistant", "Paper Ideas", "Grant Ideas",
+        "Assistant", "Lit Review", "Paper Ideas", "Grant Ideas",
         "Schedule", "Profile",
     ])
 
@@ -1718,12 +2109,14 @@ def main():
     with tab4:
         render_assistant()
     with tab5:
-        render_paper_ideas()
+        render_lit_review_builder()
     with tab6:
-        render_grant_ideas()
+        render_paper_ideas()
     with tab7:
-        render_schedule()
+        render_grant_ideas()
     with tab8:
+        render_schedule()
+    with tab9:
         render_profile()
 
 
