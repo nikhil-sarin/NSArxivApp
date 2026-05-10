@@ -1,4 +1,4 @@
-"""Persistent JSON store for paper metadata and summaries."""
+"""Persistent JSON store for paper metadata, summaries, and research notes."""
 
 import json
 from pathlib import Path
@@ -6,6 +6,14 @@ from typing import Dict, List, Optional
 
 
 STORE_PATH = Path("data/papers.json")
+
+DEFAULT_NOTES = {
+    "key_result": "",
+    "why_i_care": "",
+    "cite_for": "",
+    "caveats": "",
+    "follow_up": "",
+}
 
 
 def _load() -> Dict[str, Dict]:
@@ -24,7 +32,8 @@ def _save(data: Dict[str, Dict]):
 def save_paper(paper_id: str, metadata: Dict, summary: str):
     """Persist a paper's metadata and summary."""
     data = _load()
-    data[paper_id] = {**metadata, "summary": summary}
+    existing = data.get(paper_id, {})
+    data[paper_id] = {**existing, **metadata, "summary": summary}
     _save(data)
 
 
@@ -44,10 +53,34 @@ def delete_paper(paper_id: str):
     _save(data)
 
 
-def delete_paper(paper_id: str):
-    """Remove a paper from the JSON store."""
+def update_paper(paper_id: str, updates: Dict):
+    """Update stored fields for one paper."""
     data = _load()
-    data.pop(paper_id, None)
+    if paper_id in data:
+        data[paper_id].update(updates)
+        _save(data)
+
+
+def get_paper(paper_id: str) -> Optional[Dict]:
+    """Return one stored paper by ID."""
+    return _load().get(paper_id)
+
+
+def get_notes(paper_id: str) -> Dict:
+    """Return normalized research notes for one paper."""
+    paper = get_paper(paper_id) or {}
+    notes = paper.get("research_notes", {})
+    if not isinstance(notes, dict):
+        notes = {}
+    return {**DEFAULT_NOTES, **notes}
+
+
+def save_notes(paper_id: str, notes: Dict):
+    """Persist structured research notes for one paper."""
+    clean_notes = {key: str(notes.get(key, "")) for key in DEFAULT_NOTES}
+    data = _load()
+    if paper_id in data:
+        data[paper_id]["research_notes"] = clean_notes
     _save(data)
 
 
