@@ -36,6 +36,29 @@ streamlit run main.py
 
 Open `http://localhost:8501` in your browser.
 
+### Workstation setup with persistent tmux
+
+If you want this running continuously on a workstation:
+
+1. Create a local `.env`:
+   ```env
+   SUMMARIZER_PROVIDER=ollama
+   OLLAMA_MODEL=gemma4:latest
+   OLLAMA_HOST=http://localhost:11434
+   ```
+2. Keep your existing library by preserving the `data/` directory. If you copied `data/` from another machine, the saved papers, summaries, ideas, profile, and vector database remain available.
+3. Use the tmux helper:
+   ```bash
+   ./manage_app_tmux.sh start
+   ./manage_app_tmux.sh status
+   ./manage_app_tmux.sh logs
+   ./manage_app_tmux.sh attach
+   ./manage_app_tmux.sh restart
+   ./manage_app_tmux.sh stop
+   ```
+
+The helper starts Streamlit on `127.0.0.1:8501` inside a tmux session named `nsarxiv-app`.
+
 ### Using conda/mamba
 
 ```bash
@@ -55,14 +78,14 @@ The app supports multiple LLM providers. Set `SUMMARIZER_PROVIDER` in `.env` —
 Install Ollama and pull a model:
 ```bash
 brew install ollama          # macOS
-ollama pull llama3.1         # recommended
+ollama pull gemma4:latest    # recommended
 ollama serve                 # start the server
 ```
 
 `.env`:
 ```
 SUMMARIZER_PROVIDER=ollama
-OLLAMA_MODEL=llama3.1:latest
+OLLAMA_MODEL=gemma4:latest
 OLLAMA_HOST=http://localhost:11434
 ```
 
@@ -122,17 +145,29 @@ Run the app on your workstation and access it from anywhere (laptop, tablet, etc
 2. Sign in on both with the same account: `sudo tailscale up`
 3. On your workstation, start the app:
    ```bash
-   streamlit run main.py
+   ./manage_app_tmux.sh start
    ```
 4. On any other device, browse to:
-   ```
-   http://<workstation-tailscale-ip>:8501
-   ```
+    ```
+    http://<workstation-tailscale-ip>:8501
+    ```
    Find your Tailscale IP in the Tailscale menu bar app or with `tailscale ip`.
 
 To also offload LLM inference to the workstation, set in `.env`:
 ```
 OLLAMA_HOST=http://<workstation-tailscale-ip>:11434
+```
+
+If you prefer HTTPS over Tailscale Serve, expose Streamlit on a separate Tailscale HTTPS port:
+
+```bash
+tailscale serve --bg --https=8443 http://127.0.0.1:8501
+```
+
+Then browse to:
+
+```text
+https://<workstation-name>.<tailnet>.ts.net:8443
 ```
 
 ---
