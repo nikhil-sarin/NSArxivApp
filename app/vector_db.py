@@ -1,5 +1,6 @@
 """Vector database for paper embeddings and semantic search."""
 
+import os
 from pathlib import Path
 import chromadb
 from typing import List, Dict, Optional
@@ -29,7 +30,9 @@ class PaperVectorDB:
         )
 
         # Initialize sentence transformer for embeddings
-        self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        embedding_model = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        embedding_device = os.getenv("EMBEDDING_DEVICE", "cpu")
+        self.embedder = SentenceTransformer(embedding_model, device=embedding_device)
 
     def add_paper(
         self,

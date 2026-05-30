@@ -8,6 +8,8 @@ Supported providers (set via SUMMARIZER_PROVIDER env var):
 """
 
 import os
+import re
+
 import requests
 from typing import Optional
 
@@ -47,6 +49,7 @@ class PaperSummarizer:
     """Summarize papers using a configurable LLM provider."""
 
     CONTEXT_LIMIT = 30000  # chars — safe for all providers
+    CHUNK_SUMMARY_WORDS = 220
 
     def __init__(self, provider: Optional[str] = None, model: Optional[str] = None):
         self.provider = (provider or os.getenv("SUMMARIZER_PROVIDER", "ollama")).lower()
@@ -76,8 +79,11 @@ class PaperSummarizer:
         if not text or len(text) < 100:
             return text[:max_length] if text else ""
         if len(text) > self.CONTEXT_LIMIT:
-            text = text[:self.CONTEXT_LIMIT] + "\n...[truncated]"
+            return self._summarize_long_text(text, max_length=max_length, detailed=detailed)
 
+        return self._summarize_once(text, max_length=max_length, detailed=detailed)
+
+    def _summarize_once(self, text: str, max_length: int, detailed: bool) -> str:
         provider = self._active_provider()
         self.model = self._active_model()
 
@@ -97,6 +103,133 @@ class PaperSummarizer:
             print(f"[summarizer] {provider} failed: {e}. Using fallback.")
             return self._fallback_summarize(text, max_length)
 
+    def _split_text(self, text: str) -> list[str]:
+        """Split long paper text into prompt-sized chunks, preferring paragraph boundaries."""
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        if not paragraphs:
+            return [text[: self.CONTEXT_LIMIT]]
+
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+
+        for paragraph in paragraphs:
+            if len(paragraph) > self.CONTEXT_LIMIT:
+                if current:
+                    chunks.append("\n\n".join(current))
+                    current = []
+                    current_len = 0
+                for start in range(0, len(paragraph), self.CONTEXT_LIMIT):
+                    chunks.append(paragraph[start:start + self.CONTEXT_LIMIT])
+                continue
+
+            addition = len(paragraph) + (2 if current else 0)
+            if current and current_len + addition > self.CONTEXT_LIMIT:
+                chunks.append("\n\n".join(current))
+                current = [paragraph]
+                current_len = len(paragraph)
+            else:
+                current.append(paragraph)
+                current_len += addition
+
+        if current:
+            chunks.append("\n\n".join(current))
+
+        return chunks
+
+    def _summarize_section(self, chunk: str, chunk_index: int, total_chunks: int, max_length: int, detailed: bool) -> str:
+        """Summarize one chunk of a long paper."""
+        system = "You are a research assistant summarizing one contiguous section of an academic paper."
+        if detailed:
+            user = (
+                f"This is section {chunk_index} of {total_chunks} from a longer paper.\n"
+                f"Summarize the important content from this section only, focusing on methods, results, assumptions, and limitations.\n"
+                f"Keep it under {max_length} words.\n\nSection text:\n{chunk}"
+            )
+        else:
+            user = (
+                f"This is section {chunk_index} of {total_chunks} from a longer paper.\n"
+                f"Summarize the main contribution, method, and findings that appear in this section only.\n"
+                f"Keep it under {max_length} words.\n\nSection text:\n{chunk}"
+            )
+
+        provider = self._active_provider()
+        self.model = self._active_model()
+        try:
+            dispatch = {
+                "ollama": self._call_ollama,
+                "gemini": self._call_gemini,
+                "anthropic": self._call_anthropic,
+                "openai": self._call_openai,
+            }
+            fn = dispatch.get(provider)
+            if fn is None:
+                raise ValueError(f"Unknown provider: {provider!r}. Choose from: {list(dispatch)}")
+            return fn(system, user, max_length, detailed)
+        except Exception as e:
+            print(f"[summarizer] {provider} failed on section {chunk_index}/{total_chunks}: {e}. Using fallback.")
+            return self._fallback_summarize(chunk, max_length)
+
+    def _summarize_long_text(self, text: str, max_length: int, detailed: bool) -> str:
+        """Summarize an entire paper by map-reducing chunk summaries."""
+        chunks = self._split_text(text)
+        if len(chunks) == 1:
+            return self._summarize_once(chunks[0], max_length=max_length, detailed=detailed)
+
+        chunk_word_budget = max(max_length, self.CHUNK_SUMMARY_WORDS if detailed else max_length)
+        chunk_summaries = []
+        for idx, chunk in enumerate(chunks, start=1):
+            chunk_summary = self._summarize_section(
+                chunk,
+                chunk_index=idx,
+                total_chunks=len(chunks),
+                max_length=chunk_word_budget,
+                detailed=detailed,
+            ).strip()
+            if chunk_summary:
+                chunk_summaries.append(f"Section {idx}/{len(chunks)} summary:\n{chunk_summary}")
+
+        if not chunk_summaries:
+            return self._fallback_summarize(text, max_length)
+
+        synthesis_text = "\n\n".join(chunk_summaries)
+        if len(synthesis_text) <= self.CONTEXT_LIMIT:
+            system = "You are a research assistant combining section summaries into one paper summary."
+            if detailed:
+                user = (
+                    f"These are summaries of sequential sections of the same academic paper.\n"
+                    f"Write one coherent technical summary under {max_length} words covering the full paper's contribution, methodology, results, limitations, and relevance.\n"
+                    f"Do not describe the input as excerpts unless the summaries themselves indicate missing content.\n\nSection summaries:\n{synthesis_text}"
+                )
+            else:
+                user = (
+                    f"These are summaries of sequential sections of the same academic paper.\n"
+                    f"Write one concise summary under {max_length} words covering the full paper's main contribution, method, and findings.\n"
+                    f"Do not describe the input as excerpts unless the summaries themselves indicate missing content.\n\nSection summaries:\n{synthesis_text}"
+                )
+            return self._summarize_from_prompt(system, user, max_length, detailed, fallback_text=synthesis_text)
+
+        return self._fallback_summarize(synthesis_text, max_length)
+
+    def _summarize_from_prompt(self, system: str, user: str, max_length: int, detailed: bool, fallback_text: str) -> str:
+        """Run a custom summarization prompt through the configured provider."""
+        provider = self._active_provider()
+        self.model = self._active_model()
+        try:
+            dispatch = {
+                "ollama": self._call_ollama,
+                "gemini": self._call_gemini,
+                "anthropic": self._call_anthropic,
+                "openai": self._call_openai,
+            }
+            fn = dispatch.get(provider)
+            if fn is None:
+                raise ValueError(f"Unknown provider: {provider!r}. Choose from: {list(dispatch)}")
+            return fn(system, user, max_length, detailed)
+        except Exception as e:
+            print(f"[summarizer] {provider} failed during summary synthesis: {e}. Using fallback.")
+            return self._fallback_summarize(fallback_text, max_length)
+
     # ------------------------------------------------------------------
     # Provider implementations
     # ------------------------------------------------------------------
@@ -113,6 +246,7 @@ class PaperSummarizer:
                     {"role": "user",   "content": user},
                 ],
                 "stream": False,
+                "think": False,
                 "options": {"num_predict": num_predict},
             },
             timeout=300 if detailed else 120,
@@ -203,6 +337,7 @@ class PaperSummarizer:
                     "model": self.model,
                     "messages": [{"role": "system", "content": system}] + messages,
                     "stream": False,
+                    "think": False,
                     "options": {"num_ctx": num_ctx},
                 },
                 timeout=300,

@@ -11,8 +11,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from app.arxiv_client import ArxivClient
+from app.paper_text import get_paper_text
 from app.pdf_extractor import PDFExtractor
 from app.summarizer import PaperSummarizer
+from app.summary_workflow import summarize_with_fallback
 from app.vector_db import PaperVectorDB
 from app import paper_store
 
@@ -48,9 +50,22 @@ def run(query: str, categories: list[str], max_results: int, days_back: int = 1)
             continue
 
         print(f"  [new]  {pid}: {metadata['title'][:70]}")
-        pdf_path = client.get_pdf_path(result)
-        text = extractor.extract_first_n_pages(pdf_path, n_pages=3)
-        summary = summarizer.summarize(text)
+        try:
+            text = get_paper_text(
+                pid,
+                client,
+                extractor,
+                result=result,
+                title=metadata.get("title"),
+                pdf_url=metadata.get("pdf_url"),
+            )
+        except Exception as exc:
+            print(f"  [warn] full text unavailable for {pid}: {exc}")
+            text = ""
+        summary = summarize_with_fallback(summarizer, text, metadata.get("abstract", ""))
+        if not summary.strip():
+            print(f"  [skip] {pid} had no readable full text or abstract.")
+            continue
 
         paper_store.save_paper(pid, metadata, summary)
         chroma_meta = {

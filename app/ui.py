@@ -3,6 +3,8 @@
 import os
 import re
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 import streamlit as st
 import pandas as pd
 import networkx as nx
@@ -12,7 +14,6 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 import subprocess
 import textwrap
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.arxiv_client import ArxivClient
 from app.pdf_extractor import PDFExtractor
@@ -20,6 +21,8 @@ from app.summarizer import PaperSummarizer
 from app.vector_db import PaperVectorDB
 from app.knowledge_graph import KnowledgeGraph
 from app import paper_store
+from app.paper_text import get_paper_text
+from app.summary_workflow import summarize_with_fallback
 from app.tex_extractor import fetch_html_text
 from app import researcher_profile
 from app import idea_store
@@ -79,6 +82,7 @@ def render_header():
 def render_sidebar():
     """Render sidebar search controls. Returns (query, author, categories, max_results, date_from) or Nones."""
     st.sidebar.header("Search & Filters")
+    search_limit = ArxivClient.SEARCH_RESULT_LIMIT
 
     DEFAULT_QUERY = "neutron star mergers OR kilonovae OR GRBs OR TDEs OR neutron stars OR gravitational waves OR supernovae OR FXTs"
     DEFAULT_CATEGORIES = ["astro-ph.HE"]
@@ -103,7 +107,8 @@ def render_sidebar():
         default=st.session_state.get("sidebar_default_cats", DEFAULT_CATEGORIES),
     )
 
-    max_results = st.sidebar.slider("Max results", 5, 100, 20)
+    max_results = st.sidebar.slider("Max results", 5, search_limit, min(20, search_limit))
+    st.sidebar.caption(f"Searches are capped at {search_limit} papers to stay within ArXiv rate limits.")
 
     st.sidebar.markdown("**Date filter**")
     date_option = st.sidebar.selectbox(
@@ -133,8 +138,7 @@ def render_sidebar():
         custom_date = st.sidebar.date_input("From date:", value=now.date() - timedelta(days=30))
         date_from = datetime(custom_date.year, custom_date.month, custom_date.day, tzinfo=timezone.utc)
 
-    if st.sidebar.button("Search", type="primary"):
-        return query, author, categories, max_results, date_from
+    search_clicked = st.sidebar.button("Search", type="primary")
 
     # Provider status
     st.sidebar.markdown("---")
@@ -158,7 +162,7 @@ def render_sidebar():
     )
     if st.sidebar.button("Add paper", key="sidebar_add_paper"):
         if arxiv_input.strip():
-            _ingest_by_arxiv_id(arxiv_input.strip())
+            _ingest_by_arxiv_id(arxiv_input.strip(), in_sidebar=True)
         else:
             st.sidebar.warning("Please enter an ArXiv URL or ID.")
 
@@ -166,6 +170,8 @@ def render_sidebar():
     st.sidebar.caption(f"**Summarization:** {summ_provider} / {summ_model}")
     st.sidebar.caption(f"**Chat:** {'gemini' if has_gemini else summ_provider} / {chat_model}")
 
+    if search_clicked:
+        return query, author, categories, max_results, date_from
     return None, author, categories, max_results, date_from
 
 
@@ -289,13 +295,12 @@ def render_paper_card(paper: Dict, show_actions: bool = True):
             if show_actions:
                 pdf_url = paper.get("pdf_url", "")
                 if pdf_url and st.button("Download PDF", key=f"dl_{pid}"):
-                    import arxiv as _arxiv
-                    result = next(st.session_state.arxiv.client.results(
-                        _arxiv.Search(query=f"id:{pid}", max_results=1)
-                    ), None)
-                    if result:
-                        pdf_path = st.session_state.arxiv.get_pdf_path(result)
-                        st.success(f"Saved to {pdf_path}")
+                    pdf_path = st.session_state.arxiv.get_pdf_path_for_id(
+                        pid,
+                        title=paper.get("title"),
+                        pdf_url=pdf_url,
+                    )
+                    st.success(f"Saved to {pdf_path}")
 
 
 def _store_paper(pid: str, metadata: Dict, summary: str):
@@ -348,24 +353,25 @@ def _parse_arxiv_id(raw: str) -> str:
     return raw.split("v")[0] if re.match(r"^\d{4}\.\d{4,5}", raw.split("v")[0]) else raw
 
 
-def _ingest_by_arxiv_id(raw_input: str):
+def _ingest_by_arxiv_id(raw_input: str, in_sidebar: bool = False):
     """Fetch, summarize, and store a paper given an ArXiv URL or ID."""
-    import arxiv as _arxiv
-
     arxiv_id = _parse_arxiv_id(raw_input)
 
     if paper_store.paper_exists(arxiv_id) or paper_store.paper_exists(arxiv_id + "v1"):
-        st.sidebar.info("Paper already in library.")
+        if in_sidebar:
+            st.sidebar.info("Paper already in library.")
+        else:
+            st.info("Paper already in library.")
         return
 
-    with st.sidebar:
+    context = st.sidebar if in_sidebar else nullcontext()
+    with context:
         with st.spinner("Fetching paper..."):
-            result = next(
-                st.session_state.arxiv.client.results(
-                    _arxiv.Search(id_list=[arxiv_id], max_results=1)
-                ),
-                None,
-            )
+            try:
+                result = st.session_state.arxiv.get_result_by_id(arxiv_id)
+            except Exception as exc:
+                st.error(str(exc))
+                return
         if result is None:
             st.error(f"Could not find paper {arxiv_id} on ArXiv.")
             return
@@ -374,10 +380,19 @@ def _ingest_by_arxiv_id(raw_input: str):
         pid = metadata["arxiv_id"]
 
         with st.spinner("Loading paper text..."):
-            text = _fetch_text(result, pid)
+            text = _fetch_text(result, pid, st.session_state.arxiv, st.session_state.pdf_extractor)
 
         with st.spinner("Summarizing..."):
-            summary = st.session_state.summarizer.summarize(text)
+            summary = summarize_with_fallback(
+                st.session_state.summarizer,
+                text,
+                metadata.get("abstract", ""),
+                max_length=300,
+                detailed=False,
+            )
+            if not summary.strip():
+                st.error(f"Could not generate a summary for {pid}.")
+                return
 
         metadata["summary"] = summary
         _store_paper(pid, metadata, summary)
@@ -385,14 +400,17 @@ def _ingest_by_arxiv_id(raw_input: str):
         st.success(f"Added: {metadata['title'][:60]}...")
 
 
-def _fetch_text(result, arxiv_id: str) -> str:
-    """Get paper text — HTML source preferred, PDF fallback (safe to run in a thread)."""
-    cache_dir = Path("data/papers")
-    text = fetch_html_text(arxiv_id, cache_dir)
-    if text:
-        return text
-    pdf_path = st.session_state.arxiv.get_pdf_path(result)
-    return st.session_state.pdf_extractor.extract_first_n_pages(pdf_path, n_pages=6)
+def _fetch_text(result, arxiv_id: str, arxiv_client: ArxivClient, pdf_extractor: PDFExtractor) -> str:
+    """Get the fullest available paper text for summarization."""
+    return get_paper_text(
+        arxiv_id,
+        arxiv_client,
+        pdf_extractor,
+        result=result,
+        title=result.title,
+        pdf_url=result.pdf_url,
+        cache_dir=Path("data/papers"),
+    )
 
 
 def render_search_results(query: str, author: str, categories: List[str], max_results: int, date_from: Optional[datetime]):
@@ -414,9 +432,9 @@ def render_search_results(query: str, author: str, categories: List[str], max_re
         return
 
     # Split into new vs already stored
-    new_results = []
     stored_data = paper_store._load()
     all_metadata = []
+    new_results = []
     for result in papers:
         metadata = st.session_state.arxiv.get_paper_metadata(result)
         pid = metadata["arxiv_id"]
@@ -424,36 +442,60 @@ def render_search_results(query: str, author: str, categories: List[str], max_re
             metadata["summary"] = stored_data[pid].get("summary", "")
         else:
             new_results.append((result, metadata))
+            metadata["summary"] = metadata.get("abstract", "")
         all_metadata.append(metadata)
 
-    st.markdown(f"### Found {len(papers)} papers ({len(new_results)} new)")
+    already_stored = sum(1 for metadata in all_metadata if paper_store.paper_exists(metadata["arxiv_id"]))
+    st.markdown(f"### Found {len(papers)} papers ({already_stored} already in library)")
 
     if new_results:
-        # Step 1: download all PDFs in parallel
-        progress = st.progress(0, text="Downloading PDFs...")
+        progress = st.progress(0, text="Fetching paper text...")
         texts = {}
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {pool.submit(_fetch_text, result, meta["arxiv_id"]): (result, meta) for result, meta in new_results}
-            for i, future in enumerate(as_completed(futures)):
+        arxiv_client = st.session_state.arxiv
+        pdf_extractor = st.session_state.pdf_extractor
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            futures = {
+                pool.submit(_fetch_text, result, meta["arxiv_id"], arxiv_client, pdf_extractor): (result, meta)
+                for result, meta in new_results
+            }
+            for i, future in enumerate(as_completed(futures), start=1):
                 _, meta = futures[future]
                 try:
                     texts[meta["arxiv_id"]] = future.result()
-                except Exception as e:
+                except Exception as exc:
                     texts[meta["arxiv_id"]] = ""
-                progress.progress((i + 1) / len(new_results), text=f"Downloaded {i+1}/{len(new_results)} PDFs")
+                    if "429" in str(exc):
+                        st.warning(f"ArXiv rate limited full-text fetches for {meta['arxiv_id']}; using abstract fallback.")
+                    else:
+                        st.warning(f"Could not fetch full text for {meta['arxiv_id']}: {exc}")
+                progress.progress(i / len(new_results), text=f"Fetched {i}/{len(new_results)} papers")
 
-        # Step 2: summarize sequentially (Ollama is single-threaded)
         progress.progress(0, text="Summarizing...")
-        for i, (result, metadata) in enumerate(new_results):
+        existing_ids = {p.get("arxiv_id", p.get("id", "")) for p in st.session_state.papers}
+        added_count = 0
+        for i, (_, metadata) in enumerate(new_results, start=1):
             pid = metadata["arxiv_id"]
-            progress.progress((i + 1) / len(new_results), text=f"Summarizing {i+1}/{len(new_results)}: {metadata['title'][:50]}...")
-            summary = st.session_state.summarizer.summarize(texts.get(pid, ""))
+            progress.progress(i / len(new_results), text=f"Summarizing {i}/{len(new_results)}: {metadata['title'][:50]}...")
+            summary = summarize_with_fallback(
+                st.session_state.summarizer,
+                texts.get(pid, ""),
+                metadata.get("abstract", ""),
+                max_length=300,
+                detailed=False,
+            )
+            if not summary.strip():
+                st.warning(f"Skipping {pid}: no readable full text or abstract was available.")
+                continue
             metadata["summary"] = summary
             _store_paper(pid, metadata, summary)
-            st.session_state.papers.append(metadata)
+            if pid not in existing_ids:
+                st.session_state.papers.append(metadata)
+                existing_ids.add(pid)
+            added_count += 1
 
         progress.empty()
-        st.success(f"Added {len(new_results)} new papers to your library.")
+        if added_count:
+            st.success(f"Added {added_count} new papers to your library.")
 
     for metadata in all_metadata:
         render_paper_card(metadata)
@@ -710,24 +752,15 @@ def render_knowledge_graph():
 
 
 def _get_paper_text(pid: str, paper: Dict) -> str:
-    """Get full paper text. Tries ArXiv HTML first, falls back to PDF extraction."""
-    cache_dir = Path("data/papers")
-    # Try HTML source first — full paper, clean text, no page limit
-    text = fetch_html_text(pid, cache_dir)
-    if text:
-        return text
-    # Fallback: PDF extraction (may be incomplete)
-    print(f"[chat] HTML unavailable for {pid}, falling back to PDF")
-    pdf_path = st.session_state.arxiv.get_pdf_path_by_id(pid)
-    if pdf_path is None or not pdf_path.exists():
-        import arxiv as _arxiv
-        result = next(st.session_state.arxiv.client.results(
-            _arxiv.Search(query=f"id:{pid}", max_results=1)
-        ), None)
-        if result is None:
-            return ""
-        pdf_path = st.session_state.arxiv.get_pdf_path(result)
-    return st.session_state.pdf_extractor.extract_text(pdf_path)
+    """Get full paper text for chat without doing another metadata lookup."""
+    return get_paper_text(
+        pid,
+        st.session_state.arxiv,
+        st.session_state.pdf_extractor,
+        title=paper.get("title"),
+        pdf_url=paper.get("pdf_url"),
+        cache_dir=Path("data/papers"),
+    )
 
 
 def _source_chunks(text: str, source_label: str, chunk_chars: int = 3500, max_chunks: Optional[int] = None) -> str:
@@ -846,24 +879,32 @@ def render_paper_chat(pid: str, paper: Dict):
 def _regenerate_summary(paper: Dict, detailed: bool = False):
     """Re-summarize a single paper and update all stores."""
     pid = paper.get("arxiv_id", paper.get("id", ""))
+    try:
+        text = get_paper_text(
+            pid,
+            st.session_state.arxiv,
+            st.session_state.pdf_extractor,
+            title=paper.get("title"),
+            pdf_url=paper.get("pdf_url"),
+            cache_dir=Path("data/papers"),
+        )
+    except Exception as exc:
+        text = ""
+        if "429" in str(exc):
+            st.warning(f"ArXiv rate limited paper fetches for {pid}; using the abstract as a fallback where possible.")
+        else:
+            st.warning(f"Could not fetch full paper text for {pid}: {exc}")
 
-    # Try HTML first (full paper), fall back to PDF
-    text = fetch_html_text(pid, Path("data/papers"))
-    if not text:
-        pdf_path = st.session_state.arxiv.get_pdf_path_by_id(pid)
-        if pdf_path is None or not pdf_path.exists():
-            import arxiv as _arxiv
-            result = next(st.session_state.arxiv.client.results(
-                _arxiv.Search(query=f"id:{pid}", max_results=1)
-            ), None)
-            if result is None:
-                st.error(f"Could not find paper {pid} on ArXiv.")
-                return
-            pdf_path = st.session_state.arxiv.get_pdf_path(result)
-        n_pages = 6 if detailed else 3
-        text = st.session_state.pdf_extractor.extract_first_n_pages(pdf_path, n_pages=n_pages)
-
-    summary = st.session_state.summarizer.summarize(text, max_length=500 if detailed else 300, detailed=detailed)
+    summary = summarize_with_fallback(
+        st.session_state.summarizer,
+        text,
+        paper.get("abstract", ""),
+        max_length=500 if detailed else 300,
+        detailed=detailed,
+    )
+    if not summary.strip():
+        st.error(f"Could not generate a summary for {pid}. No readable full text or abstract was available.")
+        return None
     _store_paper(pid, paper, summary)
 
     # Update session state papers list
@@ -888,7 +929,7 @@ def render_papers_list():
 
     # Bulk summary buttons
     detailed_all = col3.checkbox("Detailed mode", key="regen_detailed_all")
-    btn_col1, btn_col2 = col3.columns(2)
+    btn_col1, btn_col2, btn_col3 = col3.columns(3)
     if btn_col1.button("Regenerate all"):
         progress = st.progress(0, text="Regenerating summaries...")
         all_papers = paper_store.load_all_papers()
@@ -898,6 +939,7 @@ def render_papers_list():
         progress.empty()
         st.session_state.papers = paper_store.load_all_papers()
         st.success("All summaries regenerated.")
+        st.rerun()
     if btn_col2.button("Fill missing"):
         missing = [p for p in paper_store.load_all_papers() if not p.get("summary", "").strip()]
         if not missing:
@@ -910,6 +952,10 @@ def render_papers_list():
             progress.empty()
             st.session_state.papers = paper_store.load_all_papers()
             st.success(f"Filled {len(missing)} missing summaries.")
+            st.rerun()
+    if btn_col3.button("Refresh"):
+        st.session_state.papers = paper_store.load_all_papers()
+        st.rerun()
 
     st.markdown("---")
 
@@ -989,7 +1035,9 @@ def render_papers_list():
                         new_summary = _regenerate_summary(paper, detailed=detailed)
                     if new_summary:
                         st.session_state.live_summaries[pid] = new_summary
-                        st.success("Done. Summary updated above.")
+                        st.session_state.papers = paper_store.load_all_papers()
+                        st.success("Done. Summary updated.")
+                        st.rerun()
                 show_chat_key = f"show_chat_{pid}"
                 if st.button("Chat with paper", key=f"chat_btn_{pid}"):
                     st.session_state[show_chat_key] = not st.session_state.get(show_chat_key, False)
