@@ -6,11 +6,12 @@ A full-stack application to discover, summarize, and explore connections between
 
 - **Search ArXiv**: Find papers by keywords, categories, and date range (today / last 7 days / last 30 days)
 - **Auto-summarization**: Extract and summarize paper content using a configurable LLM
+- **Detailed guided reports**: Generate ArXivSelaa-style reading reports for any saved paper with your configured LLM
 - **Chat with papers**: Ask questions about any paper in your library — the LLM reads the PDF and answers in context
 - **Vector search**: Semantic search powered by sentence transformers
 - **Knowledge graph**: Visualize connections between papers by category and authors
 - **Persistent library**: Papers, summaries, and metadata are saved locally and reload automatically on restart
-- **Scheduled fetch**: Run automated daily searches via cron or macOS launchd, even when the app is closed
+- **Scheduled fetch**: Run automated daily searches or ArXivSelaa-style new-submission fetches via cron or macOS launchd
 - **Multi-provider LLM**: Switch between Ollama (local), Gemini, Anthropic, and OpenAI via a single env var
 - **Remote access**: Run on a workstation, access from anywhere via Tailscale
 
@@ -180,6 +181,19 @@ Automatically fetch and summarize new papers on a schedule, even when the UI is 
 
 ```bash
 python -m app.fetch_job \
+  --mode new-submissions \
+  --categories astro-ph.HE gr-qc \
+  --max-results 20 \
+  --days-back 1
+```
+
+In `new-submissions` mode, the job starts from the requested UTC announcement day and automatically backs up to the latest non-empty announcement date, so weekend cron runs still pick up the newest ArXivSelaa-style batch.
+
+Keyword-search mode remains available:
+
+```bash
+python -m app.fetch_job \
+  --mode query-search \
   --query "neutron star kilonova" \
   --categories astro-ph.HE gr-qc \
   --max-results 20 \
@@ -190,23 +204,26 @@ python -m app.fetch_job \
 
 Add to your crontab (`crontab -e`):
 ```
-0 7 * * * cd /path/to/NSArxivApp && python -m app.fetch_job --query "neutron star" --categories astro-ph.HE >> data/fetch.log 2>&1
+0 7 * * * cd /path/to/NSArxivApp && /path/to/python -m app.fetch_job --mode new-submissions --categories astro-ph.HE --max-results 20 --days-back 1 >> /path/to/NSArxivApp/data/fetch.log 2>&1
 ```
+
+The **Schedule** tab can also install a managed Linux cron entry for you directly.
 
 ### macOS launchd
 
-Use the **Schedule** tab in the app UI to generate and install a launchd plist automatically. It runs the fetch job daily at a time you choose and logs to `data/fetch.log`.
+Use the **Schedule** tab in the app UI to generate and install a launchd plist automatically. It runs either fetch mode daily at a time you choose and logs to `data/fetch.log`.
 
 ---
 
 ## Usage
 
 1. **Search**: Enter keywords and/or select categories in the sidebar, optionally filter by date, then click **Search**
-2. **Library**: All saved papers appear in the Library tab — filter by category, regenerate summaries, or chat with individual papers
+2. **Library**: All saved papers appear in the Library tab — filter by category, regenerate summaries, generate detailed reports, or chat with individual papers
 3. **Chat with a paper**: Click **Chat with paper** inside any library entry to ask questions — the LLM reads the PDF and answers in context
 4. **Semantic search**: Describe what you're looking for in plain language in the Semantic Search tab
-5. **Knowledge graph**: Visualize category and author connections in the Knowledge Graph tab
-6. **Schedule**: Set up automated daily fetching in the Schedule tab
+5. **Detailed report**: Click **Generate detailed report** on any saved paper to create a cached HTML guided-reading report
+6. **Knowledge graph**: Visualize category and author connections in the Knowledge Graph tab
+7. **Schedule**: Set up automated daily fetching in the Schedule tab
 
 ---
 
@@ -218,6 +235,8 @@ All data is stored locally under `data/` in the app directory:
 data/
 ├── papers.json      # paper metadata and summaries (persistent across restarts)
 ├── papers/          # downloaded PDFs
+├── reports/         # cached detailed HTML reports
+├── sources/         # cached ArXiv source downloads for reports
 ├── vector_db/       # ChromaDB embeddings
 └── fetch.log        # scheduled job logs
 ```
@@ -228,8 +247,11 @@ data/
 
 ```
 app/
+├── arxiv_announcements.py # RSS/catchup announcement-day fetch
 ├── arxiv_client.py    # ArXiv API client
 ├── pdf_extractor.py   # PDF text extraction
+├── report_generator.py # Detailed report generation and HTML rendering
+├── source_extractor.py # ArXiv source download and figure extraction
 ├── summarizer.py      # Multi-provider LLM summarization and chat
 ├── vector_db.py       # ChromaDB vector storage
 ├── knowledge_graph.py # NetworkX graph for connections

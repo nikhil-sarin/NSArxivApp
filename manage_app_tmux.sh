@@ -50,7 +50,7 @@ start_app() {
     fi
 
     tmux new-session -d -s "$SESSION_NAME" \
-        "bash -lc 'cd \"$SCRIPT_DIR\" && source \"$CONDA_SH\" && conda activate \"$ENV_NAME\" && exec streamlit run main.py --server.headless true --server.address 127.0.0.1 --server.port \"$PORT\" --browser.gatherUsageStats false'"
+        "bash -lc 'cd \"$SCRIPT_DIR\" && if [ -f .env ]; then set -a && source ./.env && set +a; fi && source \"$CONDA_SH\" && conda activate \"$ENV_NAME\" && exec streamlit run main.py --server.headless true --server.address 127.0.0.1 --server.port \"$PORT\" --browser.gatherUsageStats false --server.enableStaticServing true'"
 
     echo "started tmux session '$SESSION_NAME'"
     sleep 3

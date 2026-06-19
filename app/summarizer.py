@@ -50,6 +50,10 @@ class PaperSummarizer:
 
     CONTEXT_LIMIT = 30000  # chars — safe for all providers
     CHUNK_SUMMARY_WORDS = 220
+    QUICK_SUMMARY_HEAD_CHARS = 12000
+    QUICK_SUMMARY_TAIL_CHARS = 6000
+    OLLAMA_CONCISE_TIMEOUT_SECONDS = 30
+    OLLAMA_DETAILED_TIMEOUT_SECONDS = 300
 
     def __init__(self, provider: Optional[str] = None, model: Optional[str] = None):
         self.provider = (provider or os.getenv("SUMMARIZER_PROVIDER", "ollama")).lower()
@@ -79,27 +83,41 @@ class PaperSummarizer:
         if not text or len(text) < 100:
             return text[:max_length] if text else ""
         if len(text) > self.CONTEXT_LIMIT:
+            if not detailed:
+                focused_text = self._build_quick_summary_text(text)
+                return self._summarize_once(focused_text, max_length=max_length, detailed=False)
             return self._summarize_long_text(text, max_length=max_length, detailed=detailed)
 
         return self._summarize_once(text, max_length=max_length, detailed=detailed)
 
-    def _summarize_once(self, text: str, max_length: int, detailed: bool) -> str:
+    def complete(
+        self,
+        system: str,
+        user: str,
+        max_length: int = 1024,
+        *,
+        detailed: bool = True,
+    ) -> str:
+        """Run a single provider completion without fallback handling."""
         provider = self._active_provider()
         self.model = self._active_model()
+        dispatch = {
+            "ollama": self._call_ollama,
+            "gemini": self._call_gemini,
+            "anthropic": self._call_anthropic,
+            "openai": self._call_openai,
+        }
+        fn = dispatch.get(provider)
+        if fn is None:
+            raise ValueError(f"Unknown provider: {provider!r}. Choose from: {list(dispatch)}")
+        return fn(system, user, max_length, detailed)
 
+    def _summarize_once(self, text: str, max_length: int, detailed: bool) -> str:
         system_prompt, user_prompt = _build_prompt(text, max_length, detailed)
         try:
-            dispatch = {
-                "ollama":    self._call_ollama,
-                "gemini":    self._call_gemini,
-                "anthropic": self._call_anthropic,
-                "openai":    self._call_openai,
-            }
-            fn = dispatch.get(provider)
-            if fn is None:
-                raise ValueError(f"Unknown provider: {provider!r}. Choose from: {list(dispatch)}")
-            return fn(system_prompt, user_prompt, max_length, detailed)
+            return self.complete(system_prompt, user_prompt, max_length=max_length, detailed=detailed)
         except Exception as e:
+            provider = self._active_provider()
             print(f"[summarizer] {provider} failed: {e}. Using fallback.")
             return self._fallback_summarize(text, max_length)
 
@@ -137,6 +155,55 @@ class PaperSummarizer:
 
         return chunks
 
+    def _build_quick_summary_text(self, text: str) -> str:
+        """Build a focused excerpt for concise summaries of long papers."""
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        if not paragraphs:
+            return text[: self.CONTEXT_LIMIT]
+
+        selected: list[str] = []
+        selected_set: set[str] = set()
+
+        def add_paragraphs(candidates: list[str], budget: int) -> None:
+            used = 0
+            for paragraph in candidates:
+                if paragraph in selected_set:
+                    continue
+                addition = len(paragraph) + (2 if selected else 0)
+                if used and used + addition > budget:
+                    break
+                selected.append(paragraph)
+                selected_set.add(paragraph)
+                used += addition
+
+        add_paragraphs(paragraphs, self.QUICK_SUMMARY_HEAD_CHARS)
+
+        tail_keywords = (
+            "conclusion",
+            "conclusions",
+            "discussion",
+            "results",
+            "summary",
+            "we find",
+            "we show",
+            "we present",
+            "in this paper",
+        )
+        tail_candidates = [
+            paragraph
+            for paragraph in paragraphs[-20:]
+            if any(keyword in paragraph.lower() for keyword in tail_keywords)
+        ]
+        if not tail_candidates:
+            tail_candidates = paragraphs[-6:]
+
+        add_paragraphs(tail_candidates, self.QUICK_SUMMARY_TAIL_CHARS)
+
+        focused_text = "\n\n".join(selected)
+        if len(focused_text) > self.CONTEXT_LIMIT:
+            return focused_text[: self.CONTEXT_LIMIT]
+        return focused_text
+
     def _summarize_section(self, chunk: str, chunk_index: int, total_chunks: int, max_length: int, detailed: bool) -> str:
         """Summarize one chunk of a long paper."""
         system = "You are a research assistant summarizing one contiguous section of an academic paper."
@@ -153,20 +220,10 @@ class PaperSummarizer:
                 f"Keep it under {max_length} words.\n\nSection text:\n{chunk}"
             )
 
-        provider = self._active_provider()
-        self.model = self._active_model()
         try:
-            dispatch = {
-                "ollama": self._call_ollama,
-                "gemini": self._call_gemini,
-                "anthropic": self._call_anthropic,
-                "openai": self._call_openai,
-            }
-            fn = dispatch.get(provider)
-            if fn is None:
-                raise ValueError(f"Unknown provider: {provider!r}. Choose from: {list(dispatch)}")
-            return fn(system, user, max_length, detailed)
+            return self.complete(system, user, max_length=max_length, detailed=detailed)
         except Exception as e:
+            provider = self._active_provider()
             print(f"[summarizer] {provider} failed on section {chunk_index}/{total_chunks}: {e}. Using fallback.")
             return self._fallback_summarize(chunk, max_length)
 
@@ -213,20 +270,10 @@ class PaperSummarizer:
 
     def _summarize_from_prompt(self, system: str, user: str, max_length: int, detailed: bool, fallback_text: str) -> str:
         """Run a custom summarization prompt through the configured provider."""
-        provider = self._active_provider()
-        self.model = self._active_model()
         try:
-            dispatch = {
-                "ollama": self._call_ollama,
-                "gemini": self._call_gemini,
-                "anthropic": self._call_anthropic,
-                "openai": self._call_openai,
-            }
-            fn = dispatch.get(provider)
-            if fn is None:
-                raise ValueError(f"Unknown provider: {provider!r}. Choose from: {list(dispatch)}")
-            return fn(system, user, max_length, detailed)
+            return self.complete(system, user, max_length=max_length, detailed=detailed)
         except Exception as e:
+            provider = self._active_provider()
             print(f"[summarizer] {provider} failed during summary synthesis: {e}. Using fallback.")
             return self._fallback_summarize(fallback_text, max_length)
 
@@ -235,7 +282,7 @@ class PaperSummarizer:
     # ------------------------------------------------------------------
 
     def _call_ollama(self, system: str, user: str, max_length: int, detailed: bool) -> str:
-        host = self._defaults["ollama"]["host"]
+        host = os.getenv("OLLAMA_HOST", self._defaults["ollama"]["host"])
         num_predict = max_length * 2 if detailed else max_length
         response = requests.post(
             f"{host}/api/chat",
@@ -249,7 +296,7 @@ class PaperSummarizer:
                 "think": False,
                 "options": {"num_predict": num_predict},
             },
-            timeout=300 if detailed else 120,
+            timeout=self.OLLAMA_DETAILED_TIMEOUT_SECONDS if detailed else self.OLLAMA_CONCISE_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         return response.json()["message"]["content"].strip()

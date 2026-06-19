@@ -29,6 +29,9 @@ env/
 # Streamlit
 .streamlit/
 
+# Generated report HTML (served from static/reports/ at runtime)
+static/reports/*.html
+
 # Environment variables
 .env
 .env~

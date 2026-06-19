@@ -3,8 +3,13 @@
 import os
 import re
 import json
+import shlex
+import sys
+import tempfile
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
+from html import escape as html_escape
 import streamlit as st
 import pandas as pd
 import networkx as nx
@@ -22,6 +27,7 @@ from app.vector_db import PaperVectorDB
 from app.knowledge_graph import KnowledgeGraph
 from app import paper_store
 from app.paper_text import get_paper_text
+from app.report_generator import ReportUnavailable, generate_report
 from app.summary_workflow import summarize_with_fallback
 from app.tex_extractor import fetch_html_text
 from app import researcher_profile
@@ -51,27 +57,39 @@ def get_pdf_extractor():
     return PDFExtractor()
 
 
+def _reload_papers_from_store() -> None:
+    """Reload persisted papers into session state and rebuild graph state."""
+    stored = paper_store.load_all_papers()
+    st.session_state.papers = stored
+    st.session_state.papers_store_mtime_ns = (
+        paper_store.STORE_PATH.stat().st_mtime_ns if paper_store.STORE_PATH.exists() else None
+    )
+
+    kg = KnowledgeGraph()
+    for paper in stored:
+        pid = paper.get("arxiv_id", paper.get("id", ""))
+        if not pid:
+            continue
+        kg.add_paper(pid, paper)
+        kg.connect_by_category(pid, paper.get("categories", []))
+        kg.connect_by_author(pid, paper.get("authors", []))
+    st.session_state.kg = kg
+
+
+def _sync_papers_from_store() -> None:
+    """Refresh session state when papers.json changes outside the current UI action."""
+    current_mtime_ns = paper_store.STORE_PATH.stat().st_mtime_ns if paper_store.STORE_PATH.exists() else None
+    if "papers" not in st.session_state or st.session_state.get("papers_store_mtime_ns") != current_mtime_ns:
+        _reload_papers_from_store()
+
+
 def init_session_state():
     """Initialize session state variables, loading persisted papers on first run."""
     st.session_state.vdb = get_vector_db()
     st.session_state.summarizer = get_summarizer()
     st.session_state.arxiv = get_arxiv_client()
     st.session_state.pdf_extractor = get_pdf_extractor()
-
-    if "knowledge_graph" not in st.session_state:
-        st.session_state.kg = KnowledgeGraph()
-
-    # Load persisted papers into session state on first run
-    if "papers" not in st.session_state:
-        stored = paper_store.load_all_papers()
-        st.session_state.papers = stored
-        # Rebuild knowledge graph from stored papers
-        for p in stored:
-            pid = p.get("arxiv_id", p.get("id", ""))
-            if pid:
-                st.session_state.kg.add_paper(pid, p)
-                st.session_state.kg.connect_by_category(pid, p.get("categories", []))
-                st.session_state.kg.connect_by_author(pid, p.get("authors", []))
+    _sync_papers_from_store()
 
 
 def render_header():
@@ -213,9 +231,39 @@ def _notes_lines(paper: Dict) -> List[str]:
     return lines
 
 
+def _published_timestamp(value) -> pd.Timestamp:
+    """Parse mixed published-date formats into a sortable UTC timestamp."""
+    if value is None or value == "":
+        return pd.NaT
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return pd.NaT
+    if ts.tzinfo is None:
+        return ts.tz_localize("UTC")
+    return ts.tz_convert("UTC")
+
+
+def _published_sort_key(paper: Dict) -> float:
+    """Numeric sort key for paper publication date."""
+    ts = _published_timestamp(paper.get("published", ""))
+    return ts.timestamp() if not pd.isna(ts) else float("-inf")
+
+
 def _format_notes_for_display(paper: Dict) -> str:
     lines = _notes_lines(paper)
     return "\n".join(f"- {line}" for line in lines)
+
+
+def _sanitize_paper_dict(paper: Dict) -> Dict:
+    """Normalize pandas NaN values to None for downstream helpers."""
+    clean: Dict = {}
+    for key, value in paper.items():
+        if isinstance(value, float) and math.isnan(value):
+            clean[key] = None
+        else:
+            clean[key] = value
+    return clean
 
 
 def render_paper_notes(pid: str):
@@ -301,6 +349,88 @@ def render_paper_card(paper: Dict, show_actions: bool = True):
                         pdf_url=pdf_url,
                     )
                     st.success(f"Saved to {pdf_path}")
+                if pid:
+                    _render_report_controls(paper, pid, key_prefix="search")
+
+
+_REPORTS_DIR = Path(__file__).parent.parent / "static" / "reports"
+
+
+def _report_url(report_path: Path) -> str:
+    return f"/app/static/reports/{report_path.name}"
+
+
+def _report_paths(pid: str) -> tuple[Path, Path]:
+    clean_id = pid.split("v")[0]
+    _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    return (
+        _REPORTS_DIR / f"{clean_id.replace('/', '_')}.html",
+        Path("data/sources"),
+    )
+
+
+def _load_report_html(report_path: Path) -> str:
+    return report_path.read_text(encoding="utf-8")
+
+
+def _render_report_controls(paper: Dict, pid: str, *, key_prefix: str):
+    report_path, sources_dir = _report_paths(pid)
+    exists = report_path.exists() and report_path.stat().st_size > 0
+    st.markdown("**Detailed report**")
+
+    if exists:
+        open_col, regen_col = st.columns(2)
+        open_col.link_button("Open report", url=_report_url(report_path))
+        if regen_col.button("Regenerate report", key=f"{key_prefix}_report_regen_{pid}"):
+            with st.spinner("Generating report..."):
+                try:
+                    report_path = generate_report(
+                        paper,
+                        summarizer=st.session_state.summarizer,
+                        arxiv_client=st.session_state.arxiv,
+                        pdf_extractor=st.session_state.pdf_extractor,
+                        reports_dir=_REPORTS_DIR,
+                        sources_dir=sources_dir,
+                        force=True,
+                    )
+                except ReportUnavailable as exc:
+                    st.error(f"Could not generate a report for {pid}: {exc}")
+                except Exception as exc:
+                    st.error(f"Report generation failed for {pid}: {exc}")
+                else:
+                    st.success(f"Detailed report updated: {report_path}")
+                    exists = True
+    else:
+        if st.button("Generate detailed report", key=f"{key_prefix}_report_generate_{pid}"):
+            with st.spinner("Generating report..."):
+                try:
+                    report_path = generate_report(
+                        paper,
+                        summarizer=st.session_state.summarizer,
+                        arxiv_client=st.session_state.arxiv,
+                        pdf_extractor=st.session_state.pdf_extractor,
+                        reports_dir=_REPORTS_DIR,
+                        sources_dir=sources_dir,
+                    )
+                except ReportUnavailable as exc:
+                    st.error(f"Could not generate a report for {pid}: {exc}")
+                except Exception as exc:
+                    st.error(f"Report generation failed for {pid}: {exc}")
+                else:
+                    st.success(f"Detailed report saved to {report_path}")
+                    exists = True
+
+    if not exists:
+        return
+
+    html = _load_report_html(report_path)
+    st.download_button(
+        "Download report HTML",
+        data=html,
+        file_name=report_path.name,
+        mime="text/html",
+        key=f"{key_prefix}_report_download_{pid}",
+    )
 
 
 def _store_paper(pid: str, metadata: Dict, summary: str):
@@ -621,7 +751,7 @@ def render_knowledge_graph():
         st.info("No papers match the selected graph filters.")
         return
 
-    filtered = sorted(filtered, key=lambda p: str(p.get("published", "")), reverse=True)[:max_nodes]
+    filtered = sorted(filtered, key=_published_sort_key, reverse=True)[:max_nodes]
     paper_by_id = {p.get("arxiv_id", p.get("id", "")): p for p in filtered if p.get("arxiv_id", p.get("id", ""))}
 
     G = nx.Graph()
@@ -989,7 +1119,7 @@ def render_papers_list():
     # Apply sort
     if not df.empty and "published" in df.columns:
         df = df.copy()
-        df["_pub_sort"] = pd.to_datetime(df["published"], errors="coerce")
+        df["_pub_sort"] = df["published"].apply(_published_timestamp)
         if sort_by == "Date (newest)":
             df = df.sort_values("_pub_sort", ascending=False)
         elif sort_by == "Date (oldest)":
@@ -1011,7 +1141,7 @@ def render_papers_list():
         st.session_state.live_summaries = {}
 
     for _, row in df.head(50).iterrows():
-        paper = row.to_dict()
+        paper = _sanitize_paper_dict(row.to_dict())
         pid = paper.get("arxiv_id", "")
         # Use live summary if we just regenerated it this session
         displayed_summary = st.session_state.live_summaries.get(pid, paper.get("summary", "No summary available."))
@@ -1062,6 +1192,8 @@ def render_papers_list():
                         st.success("Deleted.")
                     if dcol2.button("Cancel", key=f"del_cancel_{pid}"):
                         st.session_state[confirm_key] = False
+                if pid:
+                    _render_report_controls(paper, pid, key_prefix="library")
             if st.session_state.get(f"show_mlt_{pid}", False):
                 vec = st.session_state.vdb.get_embedding(pid)
                 if vec is not None:
@@ -1090,41 +1222,182 @@ def render_papers_list():
     st.caption(f"Data: {data_dir}  |  PDFs: papers/  |  Vector DB: vector_db/  |  Metadata: papers.json")
 
 
+_CRON_BEGIN = "# BEGIN NSArxivApp managed fetch"
+_CRON_END = "# END NSArxivApp managed fetch"
+
+
+def _build_fetch_command(
+    *,
+    app_dir: Path,
+    python_path: str,
+    mode: str,
+    query: str,
+    categories: List[str],
+    max_results: int,
+    days_back: int,
+) -> str:
+    args = [
+        python_path,
+        "-m",
+        "app.fetch_job",
+        "--mode",
+        mode,
+        "--max-results",
+        str(max_results),
+        "--days-back",
+        str(days_back),
+    ]
+    if query.strip():
+        args.extend(["--query", query.strip()])
+    if categories:
+        args.append("--categories")
+        args.extend(categories)
+    return f"cd {shlex.quote(str(app_dir))} && {shlex.join(args)}"
+
+
+def _install_cron_job(cron_line: str) -> tuple[bool, str]:
+    try:
+        current = subprocess.run(
+            ["crontab", "-l"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return False, "crontab is not installed on this system."
+
+    stderr = (current.stderr or "").strip().lower()
+    if current.returncode not in (0, 1):
+        return False, current.stderr.strip() or current.stdout.strip() or "Could not read current crontab."
+    if current.returncode == 1 and stderr and "no crontab" not in stderr:
+        return False, current.stderr.strip()
+
+    lines = current.stdout.splitlines() if current.returncode == 0 else []
+    filtered: list[str] = []
+    in_block = False
+    for line in lines:
+        if line.strip() == _CRON_BEGIN:
+            in_block = True
+            continue
+        if line.strip() == _CRON_END:
+            in_block = False
+            continue
+        if not in_block:
+            filtered.append(line)
+    while filtered and not filtered[-1].strip():
+        filtered.pop()
+    filtered.extend(["", _CRON_BEGIN, cron_line, _CRON_END, ""])
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as tmp:
+            tmp.write("\n".join(filtered))
+            tmp_path = tmp.name
+        installed = subprocess.run(
+            ["crontab", tmp_path],
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        if tmp_path is not None:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    if installed.returncode != 0:
+        return False, installed.stderr.strip() or installed.stdout.strip() or "Could not install cron job."
+    return True, "Installed managed NSArxivApp cron job."
+
+
+def _run_fetch_command(fetch_cmd: str, log_path: Path) -> tuple[bool, str]:
+    """Run the fetch job immediately and append output to the fetch log."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        ["/bin/sh", "-lc", fetch_cmd],
+        capture_output=True,
+        text=True,
+    )
+    combined = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part).strip()
+    if combined:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(combined)
+            if not combined.endswith("\n"):
+                handle.write("\n")
+    if result.returncode != 0:
+        return False, combined or "Fetch command failed."
+    return True, combined or "Fetch completed."
+
+
 def render_schedule():
     """Show cron/launchd setup for daily automated fetch."""
     st.header("Scheduled Daily Fetch")
     st.markdown(
-        "Set up an automated daily search that runs even when the app is closed. "
+        "Set up an automated daily fetch that runs even when the app is closed. "
         "Results will be added to your local library and available next time you open the app."
     )
 
     col1, col2 = st.columns(2)
     with col1:
-        sched_query = st.text_input("Search query for scheduled job", placeholder="neutron star kilonova")
+        schedule_mode = st.radio(
+            "Scheduled fetch mode",
+            ["New submissions (ArXivSelaa-style)", "Keyword search"],
+            index=0,
+        )
+        mode = "new-submissions" if schedule_mode.startswith("New submissions") else "query-search"
+        sched_query = ""
+        if mode == "query-search":
+            sched_query = st.text_input("Search query for scheduled job", placeholder="neutron star kilonova")
         sched_cats = st.multiselect(
             "Categories",
-            ["cs.LG", "cs.CL", "cs.CV", "astro-ph.HE", "astro-ph.CO", "gr-qc"],
+            ["cs.LG", "cs.CL", "cs.CV", "cs.AI", "astro-ph.HE", "astro-ph.CO", "astro-ph.GA", "physics.hep-th", "gr-qc"],
+            default=st.session_state.get("sidebar_default_cats", ["astro-ph.HE"]),
         )
         sched_max = st.slider("Max results per run", 5, 50, 10)
+        sched_days_back = st.slider(
+            "Days back",
+            0,
+            7,
+            1,
+            help="In new-submissions mode, 1 starts from the previous UTC announcement day and backs up to the latest non-empty date. In keyword mode, it searches papers submitted within the last N days.",
+        )
         sched_hour = st.slider("Run at hour (24h, local time)", 0, 23, 7)
 
     with col2:
         app_dir = Path(".").resolve()
-        python_path = subprocess.run(
-            ["which", "python"], capture_output=True, text=True
-        ).stdout.strip() or "python"
-
-        cats_arg = " ".join(sched_cats) if sched_cats else ""
-        fetch_cmd = (
-            f"cd {app_dir} && {python_path} -m app.fetch_job"
-            f" --query \"{sched_query}\""
-            + (f" --categories {cats_arg}" if cats_arg else "")
-            + f" --max-results {sched_max}"
+        python_path = sys.executable or "python"
+        fetch_cmd = _build_fetch_command(
+            app_dir=app_dir,
+            python_path=python_path,
+            mode=mode,
+            query=sched_query,
+            categories=sched_cats,
+            max_results=sched_max,
+            days_back=sched_days_back,
         )
+        log_path = app_dir / "data" / "fetch.log"
+        plist_command = html_escape(f"{fetch_cmd} >> {log_path} 2>&1")
 
         st.markdown("**cron entry** (paste into `crontab -e`)")
-        cron_line = f"0 {sched_hour} * * * {fetch_cmd} >> {app_dir}/data/fetch.log 2>&1"
+        cron_line = f"0 {sched_hour} * * * {fetch_cmd} >> {shlex.quote(str(log_path))} 2>&1"
         st.code(cron_line, language="bash")
+        if mode == "new-submissions" and not sched_cats:
+            st.warning("Choose at least one category for ArXivSelaa-style new-submissions mode.")
+        else:
+            action_col1, action_col2 = st.columns(2)
+            if action_col1.button("Run fetch now"):
+                with st.spinner("Running fetch job..."):
+                    ok, output = _run_fetch_command(fetch_cmd, log_path)
+                if ok:
+                    st.session_state.papers = paper_store.load_all_papers()
+                    st.success("Fetch completed and library reloaded.")
+                else:
+                    st.error("Fetch failed.")
+                if output:
+                    st.code(output, language="text")
+            if action_col2.button("Install cron job (Linux)"):
+                ok, message = _install_cron_job(cron_line)
+                if ok:
+                    st.success(f"Installed! Managed cron job will run daily at {sched_hour:02d}:00.")
+                    st.caption(message)
+                else:
+                    st.error(message)
 
         plist_label = "com.nsarxivapp.dailyfetch"
         plist = textwrap.dedent(f"""\
@@ -1139,7 +1412,7 @@ def render_schedule():
               <array>
                 <string>/bin/sh</string>
                 <string>-c</string>
-                <string>{fetch_cmd} >> {app_dir}/data/fetch.log 2>&1</string>
+                <string>{plist_command}</string>
               </array>
               <key>StartCalendarInterval</key>
               <dict>
@@ -1158,6 +1431,9 @@ def render_schedule():
         st.code(plist, language="xml")
 
         if st.button("Install launchd agent (macOS)"):
+            if mode == "new-submissions" and not sched_cats:
+                st.error("Choose at least one category before installing the launchd agent.")
+                return
             plist_path.parent.mkdir(parents=True, exist_ok=True)
             plist_path.write_text(plist)
             result = subprocess.run(
@@ -1231,7 +1507,7 @@ def render_lit_review_builder():
         st.info("Your library is empty. Search for papers first.")
         return
 
-    options = {_paper_label(p): p for p in sorted(papers, key=lambda x: str(x.get("published", "")), reverse=True)}
+    options = {_paper_label(p): p for p in sorted(papers, key=_published_sort_key, reverse=True)}
     selected_labels = st.multiselect(
         "Papers to include",
         options=list(options.keys()),
