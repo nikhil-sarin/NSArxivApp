@@ -13,6 +13,8 @@ import re
 import requests
 from typing import Optional
 
+from app import privacy
+
 
 def _gemini_post(url: str, api_key: str, payload: dict, timeout: int = 120) -> dict:
     """POST to Gemini API."""
@@ -356,12 +358,22 @@ class PaperSummarizer:
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"].strip()
 
-    def dispatch_chat_gemini(self, system: str, messages: list) -> str:
-        """Always use Gemini for chat regardless of SUMMARIZER_PROVIDER.
-        Falls back to the configured provider if GEMINI_API_KEY is not set."""
+    def dispatch_chat_gemini(
+        self,
+        system: str,
+        messages: list,
+        *,
+        contains_private_data: bool = False,
+    ) -> str:
+        """Prefer Gemini only when the active data-routing policy permits it."""
         api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            return self._dispatch_chat(system, messages)
+        provider = privacy.choose_provider(
+            self._active_provider(),
+            preferred_cloud_provider="gemini" if api_key else None,
+            contains_private_data=contains_private_data,
+        )
+        if provider != "gemini":
+            return self._dispatch_chat(system, messages, provider=provider)
         model = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash")
         contents = []
         for m in messages:
@@ -371,10 +383,13 @@ class PaperSummarizer:
         result = _gemini_post(url, api_key, {"system_instruction": {"parts": [{"text": system}]}, "contents": contents})
         return result["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-    def _dispatch_chat(self, system: str, messages: list) -> str:
+    def _dispatch_chat(self, system: str, messages: list, provider: Optional[str] = None) -> str:
         """Send a multi-turn chat request to the configured provider. messages = [{role, content}]"""
-        provider = self._active_provider()
-        self.model = self._active_model()
+        provider = provider or self._active_provider()
+        if provider == self._active_provider():
+            self.model = self._active_model()
+        else:
+            self.model = self._defaults.get(provider, {}).get("model", self.model)
         if provider == "ollama":
             host = self._defaults["ollama"]["host"]
             num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "32768"))

@@ -36,7 +36,7 @@ static/reports/*.html
 .env
 .env~
 .env.*
-#.env#
+\#.env#
 
 # Downloaded papers
 papers/

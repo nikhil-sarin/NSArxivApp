@@ -32,6 +32,9 @@ from app.summary_workflow import summarize_with_fallback
 from app.tex_extractor import fetch_html_text
 from app import researcher_profile
 from app import idea_store
+from app import privacy
+from app import relevance
+from app import research_db
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -218,8 +221,33 @@ def render_sidebar():
             st.sidebar.warning("Please enter an ArXiv URL or ID.")
 
     st.sidebar.markdown("---")
+    preferred_chat = "gemini" if has_gemini else summ_provider
+    public_provider = privacy.choose_provider(
+        summ_provider,
+        preferred_cloud_provider=preferred_chat,
+        contains_private_data=False,
+    )
+    private_provider = privacy.choose_provider(
+        summ_provider,
+        preferred_cloud_provider=preferred_chat,
+        contains_private_data=True,
+    )
     st.sidebar.caption(f"**Summarization:** {summ_provider} / {summ_model}")
-    st.sidebar.caption(f"**Chat:** {'gemini' if has_gemini else summ_provider} / {chat_model}")
+    st.sidebar.caption(f"**Paper chat:** {privacy.routing_label(public_provider, contains_private_data=False)}")
+    st.sidebar.caption(f"**Notes/projects:** {privacy.routing_label(private_provider, contains_private_data=True)}")
+    with st.sidebar.expander("System health", expanded=False):
+        health = research_db.health_snapshot()
+        vector_count = st.session_state.vdb.collection.count()
+        st.caption(f"Database schema: v{health['schema_version']}")
+        st.caption(f"Papers: {health['papers']} | vector records: {vector_count}")
+        st.caption(f"Search documents: {health['documents']} | inbox: {health['inbox']}")
+        if vector_count != health["papers"]:
+            st.warning(f"Vector index count differs from the library by {abs(health['papers'] - vector_count)} records.")
+        if health["documents"] != health["fts_documents"]:
+            st.error("Full-text index requires repair.")
+        if st.button("Rebuild text index", key="rebuild_text_index", use_container_width=True):
+            indexed = paper_store.rebuild_search_index()
+            st.success(f"Rebuilt searchable records for {indexed} papers.")
 
     if search_clicked:
         return query, author, categories, max_results, date_from
@@ -723,7 +751,11 @@ def render_multi_paper_chat():
             with st.spinner("Thinking..."):
                 messages = history + [{"role": "user", "content": user_input}]
                 try:
-                    reply = st.session_state.summarizer.dispatch_chat_gemini(system_prompt, messages)
+                    reply = st.session_state.summarizer.dispatch_chat_gemini(
+                        system_prompt,
+                        messages,
+                        contains_private_data=any(_notes_lines(paper) for paper in selected_papers),
+                    )
                 except Exception as e:
                     reply = f"Error: {e}"
             st.write(reply)
@@ -752,6 +784,80 @@ def render_vector_search():
 
     st.markdown("---")
     render_multi_paper_chat()
+
+
+def _all_saved_ideas() -> list[Dict]:
+    return idea_store.load_ideas("paper") + idea_store.load_ideas("grant")
+
+
+def _rescore_inbox() -> int:
+    inbox = paper_store.load_triage(status="inbox", limit=500)
+    all_triage = paper_store.load_triage(status=None, limit=5000)
+    positive = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == 1]
+    negative = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == -1]
+    interest_text = relevance.build_interest_text(researcher_profile.load(), _all_saved_ideas())
+    scored = relevance.score_papers(
+        inbox,
+        interest_text=interest_text,
+        positive_papers=positive,
+        negative_papers=negative,
+    )
+    for paper in scored:
+        paper_store.update_triage(
+            paper.get("arxiv_id", ""),
+            relevance_score=paper["relevance_score"],
+            relevance_reason=paper["relevance_reason"],
+        )
+    return len(scored)
+
+
+def render_inbox():
+    """Render the daily paper triage and relevance-feedback workflow."""
+    st.header("Research Inbox")
+    status_labels = {
+        "inbox": "Inbox",
+        "read_later": "Read later",
+        "skimmed": "Skimmed",
+        "read": "Read",
+        "saved": "Library",
+        "irrelevant": "Irrelevant",
+    }
+    ctrl1, ctrl2 = st.columns([2, 1])
+    selected_label = ctrl1.selectbox("View", list(status_labels.values()), key="inbox_status")
+    selected_status = next(key for key, label in status_labels.items() if label == selected_label)
+    if ctrl2.button("Recalculate relevance", use_container_width=True):
+        count = _rescore_inbox()
+        st.success(f"Scored {count} inbox papers against your profile, projects, and feedback.")
+
+    papers = paper_store.load_triage(status=selected_status, limit=100)
+    if not papers:
+        st.info("No papers in this view.")
+        return
+
+    st.caption(f"{len(papers)} papers shown. New scheduled papers arrive in Inbox.")
+    for paper in papers:
+        pid = paper.get("arxiv_id", "")
+        triage = paper.get("triage", {})
+        score = triage.get("relevance_score")
+        score_label = f"{score:.0f}%" if isinstance(score, (int, float)) else "unscored"
+        with st.expander(f"{score_label} - {paper.get('title', pid)}", expanded=False):
+            st.caption(f"{_authors_str(paper)} | {str(paper.get('published', ''))[:10]} | {pid}")
+            if triage.get("relevance_reason"):
+                st.caption(triage["relevance_reason"])
+            st.write(paper.get("summary") or paper.get("abstract") or "No summary available.")
+            action_cols = st.columns(6)
+            actions = [
+                ("Read later", "read_later", None),
+                ("Skimmed", "skimmed", None),
+                ("Read", "read", None),
+                ("Save", "saved", 1),
+                ("Relevant", None, 1),
+                ("Irrelevant", "irrelevant", -1),
+            ]
+            for column, (label, new_status, feedback) in zip(action_cols, actions):
+                if column.button(label, key=f"triage_{label}_{pid}", use_container_width=True):
+                    paper_store.update_triage(pid, status=new_status, feedback=feedback)
+                    st.rerun()
 
 
 def render_knowledge_graph():
@@ -995,7 +1101,11 @@ def _chat_with_paper(pid: str, paper: Dict, user_message: str) -> str:
     messages = history + [{"role": "user", "content": user_message}]
 
     try:
-        reply = st.session_state.summarizer.dispatch_chat_gemini(system_prompt, messages)
+        reply = st.session_state.summarizer.dispatch_chat_gemini(
+            system_prompt,
+            messages,
+            contains_private_data=bool(_notes_lines(paper)),
+        )
     except Exception as e:
         reply = f"Error: {e}"
 
@@ -1555,10 +1665,14 @@ def _build_selected_papers_context(papers: List[Dict], include_notes: bool = Tru
     return "\n".join(lines)
 
 
-def _assistant_call(system: str, messages: list) -> str:
-    """Call Gemini (preferred) or fall back to configured provider."""
+def _assistant_call(system: str, messages: list, *, contains_private_data: bool = True) -> str:
+    """Call the best provider allowed by the active data-routing policy."""
     try:
-        return st.session_state.summarizer.dispatch_chat_gemini(system, messages)
+        return st.session_state.summarizer.dispatch_chat_gemini(
+            system,
+            messages,
+            contains_private_data=contains_private_data,
+        )
     except Exception as e:
         return f"Error: {e}"
 
@@ -2482,29 +2596,31 @@ def main():
     if query is not None:  # None means Search button was not pressed
         render_search_results(query, author, categories, max_results, date_from)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
-        "Semantic Search", "Knowledge Graph", "Library",
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+        "Inbox", "Semantic Search", "Knowledge Graph", "Library",
         "Assistant", "Lit Review", "Paper Ideas", "Grant Ideas",
         "Schedule", "Profile",
     ])
 
     with tab1:
-        render_vector_search()
+        render_inbox()
     with tab2:
-        render_knowledge_graph()
+        render_vector_search()
     with tab3:
-        render_papers_list()
+        render_knowledge_graph()
     with tab4:
-        render_assistant()
+        render_papers_list()
     with tab5:
-        render_lit_review_builder()
+        render_assistant()
     with tab6:
-        render_paper_ideas()
+        render_lit_review_builder()
     with tab7:
-        render_grant_ideas()
+        render_paper_ideas()
     with tab8:
-        render_schedule()
+        render_grant_ideas()
     with tab9:
+        render_schedule()
+    with tab10:
         render_profile()
 
 

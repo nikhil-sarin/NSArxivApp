@@ -5,6 +5,7 @@ A full-stack application to discover, summarize, and explore connections between
 ## Features
 
 - **Search ArXiv**: Find papers by keywords, categories, and date range (today / last 7 days / last 30 days)
+- **Research inbox**: Triage new papers and rank them against your profile, active ideas, and relevance feedback
 - **Auto-summarization**: Extract and summarize paper content using a configurable LLM
 - **Detailed guided reports**: Generate ArXivSelaa-style reading reports for any saved paper with your configured LLM
 - **Chat with papers**: Ask questions about any paper in your library — the LLM reads the PDF and answers in context
@@ -13,6 +14,7 @@ A full-stack application to discover, summarize, and explore connections between
 - **Persistent library**: Papers, summaries, and metadata are saved locally and reload automatically on restart
 - **Scheduled fetch**: Run automated daily searches or ArXivSelaa-style new-submission fetches via cron or macOS launchd
 - **Multi-provider LLM**: Switch between Ollama (local), Gemini, Anthropic, and OpenAI via a single env var
+- **Privacy-aware routing**: Keep notes and project context local while allowing paper-only workflows to use cloud models
 - **Remote access**: Run on a workstation, access from anywhere via Tailscale
 
 ## Installation
@@ -73,6 +75,20 @@ pip install -r requirements.txt
 ## LLM Configuration
 
 The app supports multiple LLM providers. Set `SUMMARIZER_PROVIDER` in `.env` — no code changes needed. The provider is read live, so you can switch without restarting.
+
+### Data-routing policy
+
+Choose what may be sent to cloud providers:
+
+```env
+# local_only: everything stays local
+# paper_cloud: paper content may use cloud; notes/profile/projects stay local (default)
+# allow_cloud: all workflows may use the selected cloud provider
+DATA_ROUTING_POLICY=paper_cloud
+PRIVATE_LLM_PROVIDER=ollama
+```
+
+The sidebar shows the effective route for paper-only and private-context workflows.
 
 ### Option 1: Ollama (local, default)
 
@@ -233,7 +249,8 @@ All data is stored locally under `data/` in the app directory:
 
 ```
 data/
-├── papers.json      # paper metadata and summaries (persistent across restarts)
+├── research.db      # transactional papers, triage state, search index, and job state
+├── papers.json      # legacy source retained unchanged after first-run migration
 ├── papers/          # downloaded PDFs
 ├── reports/         # cached detailed HTML reports
 ├── sources/         # cached ArXiv source downloads for reports
@@ -255,7 +272,8 @@ app/
 ├── summarizer.py      # Multi-provider LLM summarization and chat
 ├── vector_db.py       # ChromaDB vector storage
 ├── knowledge_graph.py # NetworkX graph for connections
-├── paper_store.py     # JSON persistence layer
+├── paper_store.py     # transactional paper/triage persistence
+├── research_db.py     # SQLite schema, migrations, and full-text index
 ├── fetch_job.py       # CLI script for scheduled fetching
 └── ui.py              # Streamlit frontend
 
@@ -270,6 +288,14 @@ main.py                # Entry point
 - **RAM**: 8 GB minimum; 16 GB+ for large local models
 - **Storage**: ~5 GB for a local model + paper PDFs
 - **Ollama** (optional): only needed for local inference
+
+## Tests
+
+Run the standard-library test suite with the Python environment used by the app:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## Troubleshooting
 
