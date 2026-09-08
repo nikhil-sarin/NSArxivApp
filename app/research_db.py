@@ -12,7 +12,7 @@ from typing import Iterator, Optional
 
 
 DB_PATH = Path("data/research.db")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _now() -> str:
@@ -104,6 +104,59 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             key TEXT PRIMARY KEY,
             value_json TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS projects (
+            project_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'research',
+            status TEXT NOT NULL DEFAULT 'active',
+            description TEXT NOT NULL DEFAULT '',
+            methods TEXT NOT NULL DEFAULT '',
+            repository_paths_json TEXT NOT NULL DEFAULT '[]',
+            notion_url TEXT NOT NULL DEFAULT '',
+            notion_export_path TEXT NOT NULL DEFAULT '',
+            data_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS project_papers (
+            project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+            paper_id TEXT NOT NULL REFERENCES papers(paper_id) ON DELETE CASCADE,
+            relationship TEXT NOT NULL DEFAULT 'relevant',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(project_id, paper_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS project_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS action_proposals (
+            action_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            project_id TEXT REFERENCES projects(project_id) ON DELETE SET NULL,
+            action_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'proposed',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS evaluation_runs (
+            run_id TEXT PRIMARY KEY,
+            suite TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
         );
         """
     )

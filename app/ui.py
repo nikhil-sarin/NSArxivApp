@@ -37,6 +37,8 @@ from app import relevance
 from app import research_db
 from app import corpus_index
 from app import retrieval
+from app import project_store
+from app import action_contract
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -2595,6 +2597,182 @@ def render_grant_ideas():
     _render_ideas_tab("grant")
 
 
+def render_projects():
+    """Render project sources, literature links, weekly briefings, and proposed actions."""
+    st.header("Projects")
+    with st.expander("Create project", expanded=False):
+        with st.form("create_project"):
+            title = st.text_input("Project title")
+            description = st.text_area("Goal and scientific context")
+            methods = st.text_input("Methods and tools")
+            if st.form_submit_button("Create", type="primary"):
+                if title.strip():
+                    project_store.save_project(title=title, description=description, methods=methods)
+                    st.rerun()
+                else:
+                    st.warning("Enter a project title.")
+
+    projects = project_store.load_projects()
+    if not projects:
+        st.info("Create a project or save a paper/grant idea first.")
+        return
+    labels = {f"{project['title']} [{project['project_id']}]": project for project in projects}
+    selected_label = st.selectbox("Project", list(labels), key="project_selector")
+    project = labels[selected_label]
+    project_id = project["project_id"]
+
+    overview_tab, sources_tab, papers_tab, briefing_tab, actions_tab = st.tabs(
+        ["Overview", "Sources", "Papers", "Weekly briefing", "Actions"]
+    )
+    with overview_tab:
+        with st.form(f"project_overview_{project_id}"):
+            project_title = st.text_input("Title", value=project.get("title", ""))
+            project_description = st.text_area("Goal and context", value=project.get("description", ""), height=160)
+            project_methods = st.text_area("Methods and tools", value=project.get("methods", ""), height=100)
+            project_status = st.selectbox(
+                "Status",
+                ["active", "paused", "archived"],
+                index=["active", "paused", "archived"].index(project.get("status", "active")),
+            )
+            if st.form_submit_button("Save project"):
+                project_store.save_project(
+                    project_id=project_id,
+                    title=project_title,
+                    description=project_description,
+                    methods=project_methods,
+                    kind=project.get("kind", "research"),
+                    status=project_status,
+                    repository_paths=project.get("repository_paths", []),
+                    notion_url=project.get("notion_url", ""),
+                    notion_export_path=project.get("notion_export_path", ""),
+                )
+                st.success("Project saved.")
+
+    with sources_tab:
+        with st.form(f"project_sources_{project_id}"):
+            repositories = st.text_area(
+                "Git repositories (one absolute path per line)",
+                value="\n".join(project.get("repository_paths", [])),
+                height=120,
+            )
+            notion_url = st.text_input("Notion page URL", value=project.get("notion_url", ""))
+            notion_export = st.text_input(
+                "Local Notion Markdown export path",
+                value=project.get("notion_export_path", ""),
+            )
+            if st.form_submit_button("Save sources"):
+                project_store.save_project(
+                    project_id=project_id,
+                    title=project.get("title", ""),
+                    description=project.get("description", ""),
+                    methods=project.get("methods", ""),
+                    kind=project.get("kind", "research"),
+                    status=project.get("status", "active"),
+                    repository_paths=[line.strip() for line in repositories.splitlines() if line.strip()],
+                    notion_url=notion_url,
+                    notion_export_path=notion_export,
+                )
+                st.success("Sources saved.")
+        if st.button("Capture weekly changes", key=f"capture_sources_{project_id}"):
+            refreshed = project_store.get_project(project_id) or project
+            result = project_store.capture_project_sources(refreshed)
+            if result["git"] or result["notion_export"]:
+                st.success(f"Captured {result['git']} Git and {result['notion_export']} Notion-export snapshots.")
+            else:
+                st.info("No new source changes were found.")
+            for error in result["errors"]:
+                st.warning(error)
+        snapshots = project_store.latest_snapshots(project_id)
+        for snapshot in snapshots:
+            with st.expander(f"{snapshot['created_at'][:16]} - {snapshot['source']}"):
+                st.code(snapshot["content"][:12000])
+
+    with papers_tab:
+        all_papers = paper_store.load_all_papers()
+        paper_options = {_paper_label(paper): paper for paper in all_papers}
+        current_ids = set(project_store.linked_paper_ids(project_id))
+        defaults = [label for label, paper in paper_options.items() if paper.get("arxiv_id") in current_ids]
+        selected = st.multiselect(
+            "Linked evidence",
+            list(paper_options),
+            default=defaults,
+            key=f"project_papers_{project_id}",
+        )
+        if st.button("Save paper links", key=f"save_project_papers_{project_id}"):
+            project_store.set_linked_papers(
+                project_id,
+                [paper_options[label].get("arxiv_id", "") for label in selected],
+            )
+            st.success("Paper links saved.")
+
+        ranked = relevance.score_papers(
+            all_papers,
+            interest_text=" ".join(
+                [project.get("title", ""), project.get("description", ""), project.get("methods", "")]
+            ),
+        )[:10]
+        st.markdown("**Suggested from your library**")
+        for paper in ranked:
+            st.markdown(
+                f"- {paper['relevance_score']:.0f}% [{paper.get('title', paper.get('arxiv_id', ''))}]"
+                f"(https://arxiv.org/abs/{paper.get('arxiv_id', '')}) - {paper['relevance_reason']}"
+            )
+
+    with briefing_tab:
+        if st.button("Generate weekly project briefing", type="primary", key=f"project_briefing_{project_id}"):
+            snapshots = project_store.latest_snapshots(project_id, limit=6)
+            linked_ids = project_store.linked_paper_ids(project_id)
+            linked = [paper for paper in paper_store.load_all_papers() if paper.get("arxiv_id") in linked_ids]
+            system = (
+                "You are preparing a private weekly research-project briefing. Distinguish repository/Notion changes "
+                "from literature evidence and do not invent progress.\n\n"
+                f"Project: {project.get('title')}\n{project.get('description')}\nMethods: {project.get('methods')}\n\n"
+                + _build_selected_papers_context(linked, include_notes=True)
+                + "\n\nSnapshots:\n"
+                + "\n\n".join(f"[{item['source']}]\n{item['content'][:16000]}" for item in snapshots)
+            )
+            prompt = (
+                "Produce: ## Progress, ## Relevant Literature, ## Risks or Blockers, ## Decisions Needed, "
+                "and ## Proposed Next Actions. Cite paper titles for literature claims and snapshot source labels for progress claims."
+            )
+            with st.spinner("Generating private project briefing..."):
+                st.session_state[f"project_briefing_result_{project_id}"] = _assistant_call(
+                    system,
+                    [{"role": "user", "content": prompt}],
+                    contains_private_data=True,
+                )
+        if st.session_state.get(f"project_briefing_result_{project_id}"):
+            st.markdown(st.session_state[f"project_briefing_result_{project_id}"])
+
+    with actions_tab:
+        st.caption("Actions are proposals only. Approval never executes an external tool automatically.")
+        with st.form(f"propose_action_{project_id}"):
+            action_title = st.text_input("Proposed action")
+            action_type = st.selectbox("Type", ["task.create", "calendar.create", "notion.update", "agent.invoke"])
+            action_details = st.text_area("Payload or instructions")
+            if st.form_submit_button("Propose action") and action_title.strip():
+                action_contract.propose(
+                    "nsarxiv-app",
+                    action_type,
+                    action_title,
+                    {"instructions": action_details},
+                    project_id=project_id,
+                )
+                st.rerun()
+        for action in action_contract.list_actions(limit=100):
+            if action.get("project_id") != project_id:
+                continue
+            cols = st.columns([5, 1, 1])
+            cols[0].markdown(f"**{action['title']}**  \n`{action['action_type']}` - {action['status']}")
+            if action["status"] == "proposed":
+                if cols[1].button("Approve", key=f"approve_{action['action_id']}"):
+                    action_contract.update_status(action["action_id"], "approved")
+                    st.rerun()
+                if cols[2].button("Reject", key=f"reject_{action['action_id']}"):
+                    action_contract.update_status(action["action_id"], "rejected")
+                    st.rerun()
+
+
 def main():
     init_session_state()
     _auto_sync_papers_from_store()
@@ -2605,9 +2783,9 @@ def main():
     if query is not None:  # None means Search button was not pressed
         render_search_results(query, author, categories, max_results, date_from)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
         "Inbox", "Semantic Search", "Knowledge Graph", "Library",
-        "Assistant", "Lit Review", "Paper Ideas", "Grant Ideas",
+        "Assistant", "Lit Review", "Projects", "Paper Ideas", "Grant Ideas",
         "Schedule", "Profile",
     ])
 
@@ -2624,12 +2802,14 @@ def main():
     with tab6:
         render_lit_review_builder()
     with tab7:
-        render_paper_ideas()
+        render_projects()
     with tab8:
-        render_grant_ideas()
+        render_paper_ideas()
     with tab9:
-        render_schedule()
+        render_grant_ideas()
     with tab10:
+        render_schedule()
+    with tab11:
         render_profile()
 
 
