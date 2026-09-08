@@ -35,6 +35,8 @@ from app import idea_store
 from app import privacy
 from app import relevance
 from app import research_db
+from app import corpus_index
+from app import retrieval
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -453,6 +455,7 @@ def _render_report_controls(paper: Dict, pid: str, *, key_prefix: str):
                         reports_dir=_REPORTS_DIR,
                         sources_dir=sources_dir,
                         force=True,
+                        vector_db=st.session_state.vdb,
                     )
                 except ReportUnavailable as exc:
                     st.error(f"Could not generate a report for {pid}: {exc}")
@@ -472,6 +475,7 @@ def _render_report_controls(paper: Dict, pid: str, *, key_prefix: str):
                         pdf_extractor=st.session_state.pdf_extractor,
                         reports_dir=_REPORTS_DIR,
                         sources_dir=sources_dir,
+                        vector_db=st.session_state.vdb,
                     )
                 except ReportUnavailable as exc:
                     st.error(f"Could not generate a report for {pid}: {exc}")
@@ -1065,35 +1069,38 @@ def _paper_source_context(pid: str, paper: Dict, text: str, max_chunks: Optional
 
 def _chat_with_paper(pid: str, paper: Dict, user_message: str) -> str:
     """Send a message to the configured LLM provider with the paper in context."""
-    chat_key = f"chat_text_{pid}"
     source_key = f"chat_text_source_{pid}"
-    if chat_key not in st.session_state or st.session_state.get(f"{chat_key}_v") != 2:
-        with st.spinner("Loading full paper text..."):
-            text = _get_paper_text(pid, paper)
-            st.session_state[chat_key] = text
-            st.session_state[f"{chat_key}_v"] = 2  # bump to invalidate old PDF-only cache
-            # Record source for display
-            clean_id = pid.split("v")[0]
-            from pathlib import Path as _Path
-            html_cached = (_Path("data/papers") / f"{clean_id.replace('.','_')}_html.txt").exists()
-            st.session_state[source_key] = "HTML (full paper)" if html_cached else "PDF"
+    try:
+        corpus_index.index_paper(
+            paper,
+            arxiv_client=st.session_state.arxiv,
+            pdf_extractor=st.session_state.pdf_extractor,
+            vector_db=st.session_state.vdb,
+        )
+        evidence = retrieval.hybrid_search(
+            user_message,
+            vector_db=st.session_state.vdb,
+            paper_ids=[pid],
+            limit=8,
+        )
+    except Exception as exc:
+        print(f"[retrieval] could not build/query evidence index for {pid}: {exc}")
+        evidence = []
 
-    paper_text = st.session_state[chat_key]
-    # Gemini (1M token context) gets the full text.
-    # Ollama fallback is limited to its context window.
-    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    if not has_gemini:
-        char_limit = int(os.getenv("OLLAMA_NUM_CTX", "32768")) * 3
-        if len(paper_text) > char_limit:
-            paper_text = paper_text[:char_limit] + "\n...[truncated]"
-    max_chunks = None if has_gemini else 10
+    if evidence:
+        source_context = retrieval.context_block(evidence)
+        st.session_state[source_key] = "hybrid page/section retrieval"
+    else:
+        paper_text = _get_paper_text(pid, paper)
+        source_context = _paper_source_context(pid, paper, paper_text, max_chunks=10)
+        st.session_state[source_key] = "full-text fallback"
 
     system_prompt = (
-        "You are a research assistant. Answer using only the supplied paper source unless the user explicitly asks "
-        "for outside knowledge. Cite evidence for substantive claims using the provided source labels, for example "
-        f"[arXiv:{pid} chunk 3]. If the source does not support an answer, say that clearly. "
-        "When useful, end with a short 'Evidence' section listing the cited chunks.\n\n"
-        + _paper_source_context(pid, paper, paper_text, max_chunks=max_chunks)
+        "You are a research assistant. Answer using only the retrieved evidence unless the user explicitly asks "
+        "for outside knowledge. Every substantive factual claim must cite one or more supplied labels exactly. "
+        "If the evidence does not support an answer, say that clearly. End with a short Evidence section containing "
+        "the most important quoted passages.\n\n"
+        + source_context
     )
 
     history_key = f"chat_history_{pid}"
@@ -1104,7 +1111,7 @@ def _chat_with_paper(pid: str, paper: Dict, user_message: str) -> str:
         reply = st.session_state.summarizer.dispatch_chat_gemini(
             system_prompt,
             messages,
-            contains_private_data=bool(_notes_lines(paper)),
+            contains_private_data=any(item.get("kind") == "notes" for item in evidence),
         )
     except Exception as e:
         reply = f"Error: {e}"
@@ -1122,12 +1129,14 @@ def render_paper_chat(pid: str, paper: Dict):
     history = st.session_state.get(history_key, [])
 
     source = st.session_state.get(f"chat_text_source_{pid}", "")
-    chars = len(st.session_state.get(f"chat_text_{pid}", ""))
     has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    chat_model = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash") if has_gemini else st.session_state.summarizer._active_model()
+    provider = privacy.choose_provider(
+        st.session_state.summarizer._active_provider(),
+        preferred_cloud_provider="gemini" if has_gemini else None,
+        contains_private_data=bool(_notes_lines(paper)),
+    )
     st.markdown("**Chat with this paper**")
-    if chars:
-        st.caption(f"Context: {chars:,} chars — source: {source} — model: {chat_model}")
+    st.caption(f"Evidence: {source or 'indexed on first question'} | route: {provider}")
 
     # Show conversation history
     for msg in history:

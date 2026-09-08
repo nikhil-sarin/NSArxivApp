@@ -6,7 +6,7 @@ import base64
 import math
 import os
 import re
-from html import escape
+from html import escape, unescape
 from pathlib import Path
 
 from app.paper_text import get_paper_text
@@ -350,12 +350,31 @@ def _fallback_report_body(paper: dict, source_text: str, figures: list[dict], ab
 
 
 _Q_TAG_RE = re.compile(r"<q\b", re.IGNORECASE)
+_Q_CONTENT_RE = re.compile(r"<q\b[^>]*>(.*?)</q>", re.IGNORECASE | re.DOTALL)
+_ANY_TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _is_structurally_valid(body: str) -> bool:
-    """Body must have at least one <h2> heading and at least one <q> verbatim quote."""
+def _normalized_evidence(text: str) -> str:
+    text = unescape(_ANY_TAG_RE.sub(" ", text))
+    text = text.replace("~", " ")
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _quotes_are_grounded(body: str, source_text: str) -> bool:
+    """Require every substantial claimed verbatim quote to occur in source."""
+    quotes = [_normalized_evidence(match) for match in _Q_CONTENT_RE.findall(body)]
+    quotes = [quote for quote in quotes if len(quote) >= 20]
+    if not quotes:
+        return False
+    normalized_source = _normalized_evidence(source_text)
+    return all(quote in normalized_source for quote in quotes)
+
+
+def _is_structurally_valid(body: str, source_text: str = "") -> bool:
+    """Require report structure and, when supplied, source-grounded quotes."""
     converted = body if _HTML_TAG_RE.search(body) else _markdownish_to_html(body)
-    return bool(_H2_RE_BODY.search(converted)) and bool(_Q_TAG_RE.search(converted))
+    structurally_valid = bool(_H2_RE_BODY.search(converted)) and bool(_Q_TAG_RE.search(converted))
+    return structurally_valid and (not source_text or _quotes_are_grounded(converted, source_text))
 
 
 def _build_context_prompt(paper: dict, abstract: str) -> tuple[str, str]:
@@ -392,7 +411,7 @@ def _generate_context_section(summarizer, paper: dict, abstract: str) -> str:
         return ""
 
 
-def _generate_body_with_retry(summarizer, system: str, user: str) -> str:
+def _generate_body_with_retry(summarizer, system: str, user: str, source_text: str) -> str:
     last = ""
     for attempt in range(MAX_REPORT_ATTEMPTS):
         if attempt == 0:
@@ -406,7 +425,7 @@ def _generate_body_with_retry(summarizer, system: str, user: str) -> str:
                 "outlines, recommendations, or manuscript-writing advice."
             )
         last = summarizer.complete(system, prompt_user, max_length=DEFAULT_REPORT_WORDS, detailed=True).strip()
-        if not _looks_like_meta_commentary(last) and _is_structurally_valid(last):
+        if not _looks_like_meta_commentary(last) and _is_structurally_valid(last, source_text):
             return last
     return ""
 
@@ -465,6 +484,7 @@ def generate_report(
     reports_dir: Path,
     sources_dir: Path,
     force: bool = False,
+    vector_db=None,
 ) -> Path:
     """Generate or reuse a cached detailed report for one paper."""
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -474,6 +494,12 @@ def generate_report(
         raise ReportUnavailable("paper has no arXiv id")
     out_path = reports_dir / f"{arxiv_id.replace('/', '_')}.html"
     if not force and out_path.exists() and out_path.stat().st_size > 0:
+        if vector_db is not None:
+            from app import research_db
+            from app.corpus_index import index_report
+
+            if not research_db.has_documents("report", arxiv_id):
+                index_report(paper, out_path, vector_db=vector_db)
         return out_path
 
     paper_dir = download_source(arxiv_id, sources_dir)
@@ -513,7 +539,7 @@ def generate_report(
         )
     else:
         report_summarizer = summarizer
-    body = _generate_body_with_retry(report_summarizer, system, user)
+    body = _generate_body_with_retry(report_summarizer, system, user, source_text)
     if not body:
         body = _fallback_report_body(paper, source_text, figures, abstract)
     context_section = _generate_context_section(report_summarizer, paper, abstract)
@@ -523,4 +549,8 @@ def generate_report(
     tmp = out_path.with_suffix(".html.tmp")
     tmp.write_text(html, encoding="utf-8")
     tmp.rename(out_path)
+    if vector_db is not None:
+        from app.corpus_index import index_report
+
+        index_report(paper, out_path, vector_db=vector_db)
     return out_path

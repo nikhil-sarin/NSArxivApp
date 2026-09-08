@@ -28,6 +28,10 @@ class PaperVectorDB:
             name="papers",
             metadata={"hnsw:space": "cosine"},
         )
+        self.document_collection = self.client.get_or_create_collection(
+            name="research_documents",
+            metadata={"hnsw:space": "cosine"},
+        )
 
         # Initialize sentence transformer for embeddings
         embedding_model = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
@@ -100,6 +104,57 @@ class PaperVectorDB:
                 )
 
         return papers
+
+    def upsert_document(self, document_id: str, text: str, metadata: Dict):
+        """Embed and store one attributable research document."""
+        safe_metadata = {
+            key: value if isinstance(value, (str, int, float, bool)) else str(value)
+            for key, value in metadata.items()
+            if value is not None
+        }
+        vector = self.embedder.encode(text).tolist()
+        self.document_collection.upsert(
+            ids=[document_id],
+            embeddings=[vector],
+            documents=[text],
+            metadatas=[safe_metadata],
+        )
+
+    def search_documents(
+        self,
+        query: str,
+        top_k: int = 10,
+        paper_ids: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Semantic search across section/page/note/report document records."""
+        query_vector = self.embedder.encode(query).tolist()
+        where = None
+        if paper_ids:
+            where = {"paper_id": paper_ids[0]} if len(paper_ids) == 1 else {"paper_id": {"$in": paper_ids}}
+        kwargs = {
+            "query_embeddings": [query_vector],
+            "n_results": top_k,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            kwargs["where"] = where
+        results = self.document_collection.query(**kwargs)
+        documents = []
+        if results["ids"] and results["ids"][0]:
+            for index, document_id in enumerate(results["ids"][0]):
+                documents.append({
+                    "document_id": document_id,
+                    "text": results["documents"][0][index],
+                    "metadata": results["metadatas"][0][index],
+                    "distance": results["distances"][0][index],
+                })
+        return documents
+
+    def delete_documents(self, owner_type: str, owner_id: str):
+        try:
+            self.document_collection.delete(where={"owner_key": f"{owner_type}:{owner_id}"})
+        except Exception:
+            pass
 
     def get_embedding(self, paper_id: str) -> Optional[List[float]]:
         """Return the stored embedding for a paper, or None if not found."""

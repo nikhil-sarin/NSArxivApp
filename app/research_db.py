@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -191,18 +192,33 @@ def delete_documents(owner_type: str, owner_id: str, connection: Optional[sqlite
             db.close()
 
 
-def search_documents(query: str, limit: int = 20, kinds: Optional[list[str]] = None) -> list[dict]:
+def _fts_query(query: str) -> str:
+    tokens = re.findall(r"[\w.-]+", query, flags=re.UNICODE)
+    return " OR ".join(f'"{token.replace(chr(34), "")}"' for token in tokens)
+
+
+def search_documents(
+    query: str,
+    limit: int = 20,
+    kinds: Optional[list[str]] = None,
+    paper_ids: Optional[list[str]] = None,
+) -> list[dict]:
     """Search attributable records with SQLite FTS5/BM25 ranking."""
-    if not query.strip():
+    match_query = _fts_query(query)
+    if not match_query:
         return []
     db = connect()
     try:
         clauses = ["document_fts MATCH ?"]
-        params: list[object] = [query]
+        params: list[object] = [match_query]
         if kinds:
             placeholders = ",".join("?" for _ in kinds)
             clauses.append(f"d.kind IN ({placeholders})")
             params.extend(kinds)
+        if paper_ids:
+            placeholders = ",".join("?" for _ in paper_ids)
+            clauses.append(f"d.paper_id IN ({placeholders})")
+            params.extend(paper_ids)
         params.append(limit)
         rows = db.execute(
             f"""
@@ -221,6 +237,19 @@ def search_documents(query: str, limit: int = 20, kinds: Optional[list[str]] = N
             item["locator"] = json.loads(item.pop("locator_json") or "{}")
             results.append(item)
         return results
+    finally:
+        db.close()
+
+
+def has_documents(owner_type: str, owner_id: str, kind: Optional[str] = None) -> bool:
+    db = connect()
+    try:
+        sql = "SELECT 1 FROM documents WHERE owner_type=? AND owner_id=?"
+        params: list[object] = [owner_type, owner_id]
+        if kind:
+            sql += " AND kind=?"
+            params.append(kind)
+        return db.execute(sql + " LIMIT 1", params).fetchone() is not None
     finally:
         db.close()
 
