@@ -83,6 +83,39 @@ def _sync_papers_from_store() -> None:
         _reload_papers_from_store()
 
 
+@st.fragment(run_every=300)
+def _auto_sync_papers_from_store() -> None:
+    """Periodically notice cron updates while a browser session is left open."""
+    current_mtime_ns = paper_store.STORE_PATH.stat().st_mtime_ns if paper_store.STORE_PATH.exists() else None
+    if st.session_state.get("papers_store_mtime_ns") != current_mtime_ns:
+        _reload_papers_from_store()
+        st.toast("Library updated from scheduled fetch.")
+        st.rerun()
+
+
+def _format_file_mtime(path: Path) -> str:
+    if not path.exists():
+        return "Never"
+    return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+
+
+def _latest_fetch_block(log_path: Path) -> str:
+    """Return the most recent fetch-job block from the append-only log."""
+    if not log_path.exists():
+        return ""
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    start = 0
+    for i, line in enumerate(lines):
+        if re.match(r"^\[\d{4}-\d{2}-\d{2} .*?\] Fetching ", line):
+            start = i
+    return "\n".join(lines[start:]).strip()
+
+
+def _recent_stored_papers(limit: int = 5) -> list[Dict]:
+    papers = paper_store.load_all_papers()
+    return sorted(papers, key=_published_sort_key, reverse=True)[:limit]
+
+
 def init_session_state():
     """Initialize session state variables, loading persisted papers on first run."""
     st.session_state.vdb = get_vector_db()
@@ -1046,6 +1079,7 @@ def _regenerate_summary(paper: Dict, detailed: bool = False):
 
 
 def render_papers_list():
+    _sync_papers_from_store()
     st.header("All Papers")
     papers = st.session_state.papers
     if not papers:
@@ -1053,13 +1087,22 @@ def render_papers_list():
         return
 
     df = pd.DataFrame(papers)
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Papers", len(df))
     col2.metric("Categories", df["categories"].explode().nunique() if "categories" in df.columns else 0)
+    col3.metric("Last saved", _format_file_mtime(paper_store.STORE_PATH))
+
+    latest = _recent_stored_papers(limit=1)
+    if latest:
+        newest = latest[0]
+        col4.metric("Newest paper", newest.get("published", "N/A"))
+        st.caption(f"Latest stored: {newest.get('arxiv_id', '')} - {newest.get('title', '')}")
+    else:
+        col4.metric("Newest paper", "N/A")
 
     # Bulk summary buttons
-    detailed_all = col3.checkbox("Detailed mode", key="regen_detailed_all")
-    btn_col1, btn_col2, btn_col3 = col3.columns(3)
+    btn_col1, btn_col2, btn_col3, mode_col = st.columns([1, 1, 1, 2])
+    detailed_all = mode_col.checkbox("Detailed mode", key="regen_detailed_all")
     if btn_col1.button("Regenerate all"):
         progress = st.progress(0, text="Regenerating summaries...")
         all_papers = paper_store.load_all_papers()
@@ -1349,7 +1392,7 @@ def render_schedule():
             ["cs.LG", "cs.CL", "cs.CV", "cs.AI", "astro-ph.HE", "astro-ph.CO", "astro-ph.GA", "physics.hep-th", "gr-qc"],
             default=st.session_state.get("sidebar_default_cats", ["astro-ph.HE"]),
         )
-        sched_max = st.slider("Max results per run", 5, 50, 10)
+        sched_max = st.slider("Max results per run", 5, 50, 20)
         sched_days_back = st.slider(
             "Days back",
             0,
@@ -1373,6 +1416,26 @@ def render_schedule():
         )
         log_path = app_dir / "data" / "fetch.log"
         plist_command = html_escape(f"{fetch_cmd} >> {log_path} 2>&1")
+
+        st.markdown("**Current scheduled-fetch status**")
+        status_col1, status_col2 = st.columns(2)
+        status_col1.metric("Fetch log updated", _format_file_mtime(log_path))
+        status_col2.metric("Library updated", _format_file_mtime(paper_store.STORE_PATH))
+        recent = _recent_stored_papers(limit=5)
+        if recent:
+            st.caption(
+                "Recent stored papers: "
+                + "; ".join(
+                    f"{p.get('arxiv_id', '')} ({p.get('published', 'N/A')})"
+                    for p in recent
+                )
+            )
+        latest_block = _latest_fetch_block(log_path)
+        with st.expander("Latest fetch log", expanded=False):
+            if latest_block:
+                st.code(latest_block, language="text")
+            else:
+                st.info("No fetch log found yet.")
 
         st.markdown("**cron entry** (paste into `crontab -e`)")
         cron_line = f"0 {sched_hour} * * * {fetch_cmd} >> {shlex.quote(str(log_path))} 2>&1"
@@ -2411,6 +2474,7 @@ def render_grant_ideas():
 
 def main():
     init_session_state()
+    _auto_sync_papers_from_store()
     render_header()
 
     query, author, categories, max_results, date_from = render_sidebar()
