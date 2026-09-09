@@ -3007,10 +3007,11 @@ def render_citation_opportunities():
         if item["classification"] in {"strong_citation_opportunity", "potentially_useful"}
         and item["status"] in {"proposed", "needs_review"}
     ]
-    metric_cols = st.columns(3)
+    metric_cols = st.columns(4)
     metric_cols[0].metric("Awaiting review", len(reviewable))
     metric_cols[1].metric("Checks running", pending_count)
     metric_cols[2].metric("Failed checks", failed_count)
+    metric_cols[3].metric("Catalogue works", len(contributions))
 
     with st.expander("Recheck a paper", expanded=False):
         paper_options = {_paper_label(paper): paper for paper in sorted(papers, key=_published_sort_key, reverse=True)}

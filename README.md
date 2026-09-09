@@ -304,6 +304,12 @@ Imports always enter `proposed` state. The app does not execute an action, and a
 
 Newly ingested papers are checked automatically using deterministic signal and reference filters before any model call. Only filtered candidates receive a strict evidence-grounded model judgement. The **Citation Opportunities** view is the manual review and export queue; its advanced controls can rerun a specific paper when the contribution catalogue changes.
 
+Backfill a bounded recent slice after expanding the catalogue:
+
+```bash
+python -m app.citation_backfill --days 90 --max-papers 100
+```
+
 Only `strong_citation_opportunity` and `potentially_useful` findings can be confirmed. Confirmation posts a stable, bounded ImportBundle to `LOCAL_ORCHESTRATOR_URL`; it includes quotes and catalogue metadata, never full paper text or secrets. LocalOrchestrator then requires separate candidate and exact-plan approval before a local model can generate editable subject/body text. Neither app sends email or creates a Gmail draft.
 
 ---

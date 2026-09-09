@@ -48,6 +48,16 @@ class CitationEvidenceTests(unittest.TestCase):
         self.assertFalse(packet["candidate"])
         self.assertTrue(packet["matched_exclusions"])
 
+    def test_identifier_suppresses_when_reference_heading_is_not_extracted(self):
+        text = (
+            "Methods\n\nWe use Bilby for transient light curve inference.\n\n"
+            "Sarin et al. 2024, doi:10.1093/mnras/stae1238"
+        )
+        packet = build_evidence_packet("2609.1", text, CONTRIBUTION, owner_name_variants=[])
+        self.assertTrue(packet["reference_check"]["canonical_citation_found"])
+        self.assertEqual(packet["reference_check"]["matched_identifiers"][0]["location"], "document")
+        self.assertFalse(packet["candidate"])
+
 
 if __name__ == "__main__":
     unittest.main()

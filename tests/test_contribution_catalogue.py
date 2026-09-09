@@ -12,6 +12,8 @@ class ContributionCatalogueTests(unittest.TestCase):
         redback = contribution_catalogue.get(catalogue, "redback")
         self.assertIn("redback software", redback["aliases"])
         self.assertEqual(redback["canonical_citations"][0]["arxiv_id"], "2308.12806")
+        self.assertEqual(len(catalogue["contributions"]), 22)
+        self.assertTrue(all(item.get("enabled", True) for item in catalogue["contributions"]))
 
     def test_duplicate_and_missing_identifier_errors_include_id(self):
         entry = {

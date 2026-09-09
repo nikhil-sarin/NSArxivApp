@@ -44,11 +44,15 @@ def _reference_check(text: str, contribution: dict, owner_variants: list[str]) -
     for citation in contribution.get("canonical_citations", []):
         for kind in ("doi", "arxiv_id", "bibcode"):
             value = str(citation.get(kind, "")).strip()
-            if value and normalize(value) in normalized_refs:
-                matched_identifiers.append({"kind": kind, "value": value, "location": "references"})
+            normalized_value = normalize(value)
+            if value and normalized_value in normalized_all:
+                location = "references" if normalized_value in normalized_refs else "document"
+                matched_identifiers.append({"kind": kind, "value": value, "location": location})
         title = str(citation.get("title", "")).strip()
-        if title and normalize(title) in normalized_refs:
-            matched_identifiers.append({"kind": "title", "value": title, "location": "references"})
+        normalized_title = normalize(title)
+        if title and normalized_title in normalized_all:
+            location = "references" if normalized_title in normalized_refs else "document"
+            matched_identifiers.append({"kind": "title", "value": title, "location": location})
     aliases = contribution.get("aliases", [])
     return {
         "canonical_citation_found": bool(matched_identifiers),

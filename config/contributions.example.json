@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "owner": "Nikhil Sarin",
   "owner_name_variants": ["N. Sarin", "N Sarin", "Nikhil Sarin"],
   "contributions": [
@@ -7,62 +7,377 @@
       "id": "redback",
       "name": "Redback",
       "kind": "software",
-      "canonical_citations": [
-        {
-          "title": "REDBACK: a Bayesian inference software package for electromagnetic transients",
-          "doi": "10.1093/mnras/stae1238",
-          "arxiv_id": "2308.12806",
-          "bibcode": "2024MNRAS.531.1203S",
-          "preferred_text": "Sarin et al. (2024), MNRAS 531, 1203",
-          "url": "https://doi.org/10.1093/mnras/stae1238"
-        }
-      ],
+      "canonical_citations": [{
+        "title": "Redback: A Bayesian inference software package for electromagnetic transients",
+        "doi": "10.1093/mnras/stae1238",
+        "arxiv_id": "2308.12806",
+        "bibcode": "2024MNRAS.531.1203S",
+        "preferred_text": "Sarin et al. (2024), MNRAS 531, 1203",
+        "url": "https://doi.org/10.1093/mnras/stae1238"
+      }],
       "aliases": ["redback", "redback software", "redback package"],
-      "strong_signals": [
-        "bilby transient light curve inference",
-        "bayesian electromagnetic transient modelling",
-        "simulate and fit electromagnetic transients"
-      ],
-      "weak_signals": [
-        "transient parameter inference",
-        "magnetar powered transient modelling",
-        "kilonova light curve modelling"
-      ],
+      "strong_signals": ["bilby transient light curve inference", "bayesian electromagnetic transient modelling", "simulate and fit electromagnetic transients"],
+      "weak_signals": ["transient parameter inference", "magnetar powered transient modelling", "kilonova light curve modelling"],
       "exclusions": ["bilby gravitational wave inference"],
       "public_url": "https://github.com/nikhil-sarin/redback",
       "contact_framing": "Offer Redback as potentially relevant software and invite discussion; never imply misconduct."
     },
     {
-      "id": "csm-framework",
-      "name": "Generalised CSM-interaction framework",
-      "kind": "software-and-method",
-      "unpublished": true,
-      "canonical_citations": [
-        {
-          "title": "From mass-loss histories to lightcurves: a generalised framework for interaction-powered transients",
-          "preferred_text": "Sarin & Hirai, in preparation",
-          "url": "https://github.com/nikhil-sarin/redback-csm"
-        }
-      ],
-      "aliases": ["redback-csm"],
-      "strong_signals": ["thin shell arbitrary circumstellar density profile", "inference of time variable mass loss history"],
-      "weak_signals": ["circumstellar interaction light curve inference", "multi shell circumstellar medium modelling"],
-      "exclusions": ["hydrodynamical simulation without light curve inference"],
-      "public_url": "https://github.com/nikhil-sarin/redback-csm",
-      "contact_framing": "Offer the unpublished modelling framework as potentially useful and invite technical discussion; do not describe it as a missed citation."
+      "id": "nickel-mixing-supernovae",
+      "name": "Signatures of nickel mixing and neutron-rich ejecta in supernovae",
+      "kind": "method-and-interpretation",
+      "canonical_citations": [{
+        "title": "Signatures of 56Ni Mixing and Neutron-rich Ejecta in Supernovae",
+        "arxiv_id": "2606.23780",
+        "preferred_text": "Sarin (2026), arXiv:2606.23780",
+        "url": "https://arxiv.org/abs/2606.23780"
+      }],
+      "aliases": ["snmix", "nickel mixing signatures", "neutron rich ejecta signatures"],
+      "strong_signals": ["nickel mixing supernova lightcurve inference", "multi-shell radioactive supernova lightcurve model", "r-process ejecta collapsar lightcurves"],
+      "weak_signals": ["radioactive material distribution supernova lightcurves", "one-zone radioactive decay bias", "neutron-rich ejecta photometric signatures"],
+      "exclusions": ["spectroscopic abundance analysis without lightcurve modelling"],
+      "public_url": "https://arxiv.org/abs/2606.23780",
+      "contact_framing": "Share the directly relevant mixing or neutron-rich-ejecta result without implying that citation is obligatory."
     },
     {
-      "id": "mixing-work-placeholder",
-      "name": "Mixing contribution - replace with user-verified scope",
-      "kind": "unpublished-placeholder",
-      "unpublished": true,
-      "enabled": false,
-      "canonical_citations": [],
-      "aliases": ["mixing work placeholder"],
-      "strong_signals": ["replace with verified direct-use signal"],
-      "weak_signals": ["replace with verified topical signal"],
-      "exclusions": [],
-      "contact_framing": "Disabled until Nikhil supplies the exact contribution, scope, and preferred citation."
+      "id": "generalised-csm-framework",
+      "name": "Generalised CSM-interaction framework",
+      "kind": "software-and-method",
+      "canonical_citations": [{
+        "title": "From mass-loss histories to lightcurves: a generalised framework for interaction-powered transients",
+        "arxiv_id": "2605.19571",
+        "preferred_text": "Sarin & Hirai (2026), arXiv:2605.19571",
+        "url": "https://arxiv.org/abs/2605.19571"
+      }],
+      "aliases": ["redback-csm", "generalised csm interaction framework"],
+      "strong_signals": ["thin shell arbitrary circumstellar density profile", "inference of time variable mass loss history", "interaction-powered transient lightcurve inference"],
+      "weak_signals": ["circumstellar interaction light curve modelling", "multi-shell circumstellar medium modelling", "eruptive mass loss lightcurve"],
+      "exclusions": ["hydrodynamical simulation without light curve inference"],
+      "public_url": "https://github.com/nikhil-sarin/redback-csm",
+      "contact_framing": "Offer the published CSM framework as a directly relevant comparison or modelling tool."
+    },
+    {
+      "id": "ztf-dr2-snia-lightcurves",
+      "name": "Physical lightcurve modelling of 2,205 ZTF DR2 Type Ia supernovae",
+      "kind": "population-analysis",
+      "canonical_citations": [{
+        "title": "Lightcurve Modelling of 2,205 ZTF DR2 Type Ia Supernovae: Implications for SN Ia Physics and Cosmology",
+        "arxiv_id": "2602.02677",
+        "preferred_text": "Sarin et al. (2026), arXiv:2602.02677",
+        "url": "https://arxiv.org/abs/2602.02677"
+      }],
+      "aliases": ["ztf dr2 type ia lightcurves", "2205 ztf type ia supernovae"],
+      "strong_signals": ["physical modelling ztf dr2 type ia supernovae", "nickel mass ejecta mass ztf type ia population", "type ia lightcurve physics cosmology mass step"],
+      "weak_signals": ["physical standardization type ia supernovae", "population inference type ia explosion properties", "host galaxy nickel mass type ia"],
+      "exclusions": ["spectroscopic classification without lightcurve modelling"],
+      "public_url": "https://arxiv.org/abs/2602.02677",
+      "contact_framing": "Share the population result as a relevant empirical or methodological comparison."
+    },
+    {
+      "id": "relativistic-transients-2040s",
+      "name": "GRBs and Relativistic Transients in the 2040s",
+      "kind": "strategy-and-roadmap",
+      "canonical_citations": [{
+        "title": "GRBs and Relativistic Transients in the 2040s",
+        "arxiv_id": "2512.15010",
+        "preferred_text": "Sarin et al. (2025), arXiv:2512.15010",
+        "url": "https://arxiv.org/abs/2512.15010"
+      }],
+      "aliases": ["relativistic transients 2040s", "grbs 2040s"],
+      "strong_signals": ["future facilities gamma ray bursts relativistic transients", "rapid response spectroscopy transients 2040s", "characterization gap relativistic transient facilities"],
+      "weak_signals": ["next generation time domain astronomy strategy", "third generation gravitational wave transient followup", "robotic optical near infrared transient facility"],
+      "exclusions": ["historical gamma ray burst review without future facilities"],
+      "public_url": "https://arxiv.org/abs/2512.15010",
+      "contact_framing": "Offer the roadmap as related strategic context, not as a required technical citation."
+    },
+    {
+      "id": "typeii-supernova-surrogates",
+      "name": "Surrogate models for Type II supernova lightcurves and photospheres",
+      "kind": "software-and-method",
+      "canonical_citations": [{
+        "title": "Surrogate models for lightcurves and photosphere properties of Type II supernovae",
+        "arxiv_id": "2506.02107",
+        "preferred_text": "Sarin et al. (2025), arXiv:2506.02107",
+        "url": "https://arxiv.org/abs/2506.02107"
+      }],
+      "aliases": ["type ii supernova surrogate", "stella lightcurve surrogate"],
+      "strong_signals": ["surrogate models type ii supernova lightcurves", "stella neural network supernova lightcurves", "machine learning accelerated type ii supernova inference"],
+      "weak_signals": ["emulator radiation hydrodynamics supernova", "photosphere temperature radius surrogate", "fast type ii supernova modelling"],
+      "exclusions": ["type ia supernova surrogate"],
+      "public_url": "https://arxiv.org/abs/2506.02107",
+      "contact_framing": "Offer the surrogate models as a directly reusable method or benchmark."
+    },
+    {
+      "id": "tde-cooling-envelope",
+      "name": "Tidal disruption events through the cooling-envelope model",
+      "kind": "method-and-interpretation",
+      "canonical_citations": [{
+        "title": "Tidal Disruption Events through the Lens of the Cooling Envelope Model",
+        "arxiv_id": "2307.15121",
+        "preferred_text": "Sarin & Metzger (2024), ApJL 961, L19",
+        "url": "https://arxiv.org/abs/2307.15121"
+      }],
+      "aliases": ["tde cooling envelope", "cooling envelope model"],
+      "strong_signals": ["cooling envelope model tidal disruption event", "tidal disruption lightcurve cooling envelope inference"],
+      "weak_signals": ["optical tidal disruption event reprocessing", "tde envelope mass radius inference", "tidal disruption bolometric lightcurve modelling"],
+      "exclusions": ["x-ray tidal disruption event without optical reprocessing"],
+      "public_url": "https://arxiv.org/abs/2307.15121",
+      "contact_framing": "Share the cooling-envelope analysis as a relevant model comparison."
+    },
+    {
+      "id": "kilonova-heating-rates",
+      "name": "Cautionary tales on heating-rate prescriptions in kilonovae",
+      "kind": "method-and-systematics",
+      "canonical_citations": [{
+        "title": "Cautionary tales on heating-rate prescriptions in kilonovae",
+        "arxiv_id": "2404.07271",
+        "preferred_text": "Sarin & Rosswog (2024), ApJL 971, L17",
+        "url": "https://arxiv.org/abs/2404.07271"
+      }],
+      "aliases": ["kilonova heating rate prescriptions", "cautionary tales kilonova"],
+      "strong_signals": ["heating rate prescription kilonova lightcurve inference", "r-process radioactive heating systematic kilonova"],
+      "weak_signals": ["kilonova thermalization heating model", "kilonova ejecta parameter bias heating", "radioactive power kilonova modelling"],
+      "exclusions": ["nuclear heating calculation without kilonova lightcurves"],
+      "public_url": "https://arxiv.org/abs/2404.07271",
+      "contact_framing": "Point to quantified heating-prescription systematics relevant to interpretation."
+    },
+    {
+      "id": "grb201006a-radio-flash",
+      "name": "Origin of the coherent radio flash associated with GRB 201006A",
+      "kind": "source-interpretation",
+      "canonical_citations": [{
+        "title": "The origin of the coherent radio flash potentially associated with GRB 201006A",
+        "arxiv_id": "2404.08048",
+        "preferred_text": "Sarin et al. (2024), ApJL 973, L22",
+        "url": "https://arxiv.org/abs/2404.08048"
+      }],
+      "aliases": ["grb 201006a radio flash", "coherent radio flash grb"],
+      "strong_signals": ["coherent radio flash grb 201006a", "fast radio burst association gamma ray burst 201006a"],
+      "weak_signals": ["coherent radio emission compact merger", "fast radio burst gamma ray burst association", "magnetar collapse coherent radio burst"],
+      "exclusions": ["unrelated repeating fast radio burst population"],
+      "public_url": "https://arxiv.org/abs/2404.08048",
+      "contact_framing": "Share the source-specific interpretation only where the radio/GRB connection is direct."
+    },
+    {
+      "id": "magnetar-driven-kilonovae",
+      "name": "Diversity of magnetar-driven kilonovae",
+      "kind": "model-and-population",
+      "canonical_citations": [{
+        "title": "On the diversity of magnetar-driven kilonovae",
+        "arxiv_id": "2205.14159",
+        "preferred_text": "Sarin et al. (2022), MNRAS 516",
+        "url": "https://arxiv.org/abs/2205.14159"
+      }],
+      "aliases": ["magnetar driven kilonovae", "magnetar kilonova diversity"],
+      "strong_signals": ["magnetar-driven kilonova lightcurves", "long-lived neutron star remnant kilonova model"],
+      "weak_signals": ["engine-powered kilonova diversity", "magnetar energy injection merger ejecta", "bright blue magnetar kilonova"],
+      "exclusions": ["black hole remnant kilonova without engine injection"],
+      "public_url": "https://arxiv.org/abs/2205.14159",
+      "contact_framing": "Offer the model grid and diversity result as relevant kilonova context."
+    },
+    {
+      "id": "at2020blt-low-efficiency-grb",
+      "name": "Low-efficiency long GRBs and AT2020blt",
+      "kind": "source-interpretation",
+      "canonical_citations": [{
+        "title": "Low-efficiency long gamma-ray bursts: A case study with AT2020blt",
+        "arxiv_id": "2106.01556",
+        "preferred_text": "Sarin et al. (2022), MNRAS 512",
+        "url": "https://arxiv.org/abs/2106.01556"
+      }],
+      "aliases": ["at2020blt", "low efficiency long grb"],
+      "strong_signals": ["at2020blt low efficiency gamma ray burst", "optical transient inefficient long grb"],
+      "weak_signals": ["orphan afterglow gamma ray efficiency", "gamma dark long burst afterglow", "relativistic transient prompt efficiency"],
+      "exclusions": ["ordinary on-axis gamma ray burst efficiency population"],
+      "public_url": "https://arxiv.org/abs/2106.01556",
+      "contact_framing": "Share the AT2020blt case or low-efficiency interpretation when directly comparable."
+    },
+    {
+      "id": "cdfs-xt1-off-axis-jet",
+      "name": "CDF-S XT1 as an off-axis structured jet",
+      "kind": "source-interpretation",
+      "canonical_citations": [{
+        "title": "CDF-S XT1: The off-axis afterglow of a neutron star merger at z = 2.23",
+        "arxiv_id": "2105.10108",
+        "preferred_text": "Sarin et al. (2021), arXiv:2105.10108",
+        "url": "https://arxiv.org/abs/2105.10108"
+      }],
+      "aliases": ["cdf-s xt1", "cdfs xt1", "off-axis structured jet xt1"],
+      "strong_signals": ["cdf-s xt1 off-axis structured jet", "xt1 neutron star merger afterglow"],
+      "weak_signals": ["fast x-ray transient off-axis afterglow", "distant structured jet x-ray transient", "orphan short grb afterglow"],
+      "exclusions": ["cdf-s survey unrelated transient"],
+      "public_url": "https://arxiv.org/abs/2105.10108",
+      "contact_framing": "Share the source-specific structured-jet interpretation where directly comparable."
+    },
+    {
+      "id": "grb-radiative-losses",
+      "name": "GRB X-ray afterglows with radiative losses and millisecond magnetars",
+      "kind": "method-and-interpretation",
+      "canonical_citations": [{
+        "title": "Interpreting the X-ray afterglows of gamma-ray bursts with radiative losses and millisecond magnetars",
+        "arxiv_id": "2008.05745",
+        "preferred_text": "Sarin, Lasky & Ashton (2020), MNRAS 499",
+        "url": "https://arxiv.org/abs/2008.05745"
+      }],
+      "aliases": ["grb radiative losses magnetar", "radiative plateau model"],
+      "strong_signals": ["radiative losses millisecond magnetar x-ray afterglow", "radiative magnetar gamma ray burst plateau model"],
+      "weak_signals": ["x-ray plateau energy injection efficiency", "magnetar spin-down radiative afterglow", "grb plateau radiative correction"],
+      "exclusions": ["external shock radiative loss without central engine"],
+      "public_url": "https://arxiv.org/abs/2008.05745",
+      "contact_framing": "Offer the radiative-loss treatment as a relevant modelling systematic."
+    },
+    {
+      "id": "short-grb-magnetar-fireball",
+      "name": "Short-GRB X-ray afterglows: magnetar or fireball",
+      "kind": "model-comparison",
+      "canonical_citations": [{
+        "title": "X-ray afterglows of short gamma-ray bursts: Magnetar or Fireball?",
+        "arxiv_id": "1812.08176",
+        "preferred_text": "Sarin, Lasky & Ashton (2019), ApJ 872, 114",
+        "url": "https://arxiv.org/abs/1812.08176"
+      }],
+      "aliases": ["short grb magnetar or fireball", "x-ray afterglow magnetar fireball"],
+      "strong_signals": ["short gamma ray burst x-ray afterglow magnetar fireball", "bayesian comparison magnetar fireball x-ray plateau"],
+      "weak_signals": ["short grb plateau central engine", "millisecond magnetar x-ray afterglow", "fireball versus magnetar afterglow"],
+      "exclusions": ["long gamma ray burst prompt emission"],
+      "public_url": "https://arxiv.org/abs/1812.08176",
+      "contact_framing": "Share the model-comparison result where short-GRB plateau interpretation is central."
+    },
+    {
+      "id": "continual-gw-coverage",
+      "name": "GRB 211211A and continual gravitational-wave coverage",
+      "kind": "observing-strategy",
+      "canonical_citations": [{
+        "title": "Missed opportunities: GRB 211211A and the case for continual gravitational-wave coverage with a single observatory",
+        "arxiv_id": "2210.14938",
+        "preferred_text": "Sarin et al. (2023), MNRAS",
+        "url": "https://arxiv.org/abs/2210.14938"
+      }],
+      "aliases": ["grb 211211a missed opportunities", "continual gravitational wave coverage"],
+      "strong_signals": ["grb 211211a continual gravitational wave coverage", "single observatory gravitational wave duty cycle multimessenger"],
+      "weak_signals": ["gravitational wave detector coverage gamma ray burst", "multimessenger observing duty cycle", "missed compact merger gravitational wave signal"],
+      "exclusions": ["continuous gravitational wave source search"],
+      "public_url": "https://arxiv.org/abs/2210.14938",
+      "contact_framing": "Offer the duty-cycle analysis as relevant observing-strategy context."
+    },
+    {
+      "id": "bns-short-grb-rates",
+      "name": "Linking neutron-star binary and short-GRB rates",
+      "kind": "population-inference",
+      "canonical_citations": [{
+        "title": "Linking the rates of neutron star binaries and short gamma-ray bursts",
+        "arxiv_id": "2201.08491",
+        "preferred_text": "Sarin et al. (2022), Physical Review D",
+        "url": "https://arxiv.org/abs/2201.08491"
+      }],
+      "aliases": ["bns short grb rates", "linking neutron star binary rates"],
+      "strong_signals": ["joint neutron star merger short gamma ray burst rates", "hierarchical inference bns merger sgrb rate"],
+      "weak_signals": ["short grb beaming fraction merger rate", "binary neutron star gamma ray burst population", "fraction neutron star mergers produce short grbs"],
+      "exclusions": ["binary black hole merger rate"],
+      "public_url": "https://arxiv.org/abs/2201.08491",
+      "contact_framing": "Share the joint rate framework as a relevant population-inference comparison."
+    },
+    {
+      "id": "postmerger-remnant-review",
+      "name": "Evolution of binary neutron-star post-merger remnants",
+      "kind": "review",
+      "canonical_citations": [{
+        "title": "The evolution of binary neutron star post-merger remnants",
+        "arxiv_id": "2012.08172",
+        "preferred_text": "Sarin & Lasky (2021), General Relativity and Gravitation",
+        "url": "https://arxiv.org/abs/2012.08172"
+      }],
+      "aliases": ["binary neutron star post-merger remnant review", "postmerger remnant evolution"],
+      "strong_signals": ["evolution binary neutron star post-merger remnants", "review long-lived neutron star merger remnant"],
+      "weak_signals": ["post-merger neutron star fate", "supramassive remnant evolution", "binary neutron star remnant review"],
+      "exclusions": ["black hole binary merger remnant"],
+      "public_url": "https://arxiv.org/abs/2012.08172",
+      "contact_framing": "Offer the review as broad context rather than implying a mandatory citation."
+    },
+    {
+      "id": "nsbh-equation-of-state",
+      "name": "Measuring the nuclear equation of state with NS-BH mergers",
+      "kind": "inference-method",
+      "canonical_citations": [{
+        "title": "Measuring the nuclear equation of state with neutron star-black hole mergers",
+        "arxiv_id": "2311.05689",
+        "preferred_text": "Sarin et al. (2024), Physical Review D",
+        "url": "https://arxiv.org/abs/2311.05689"
+      }],
+      "aliases": ["nsbh nuclear equation of state", "neutron star black hole eos"],
+      "strong_signals": ["measure nuclear equation of state neutron star black hole mergers", "hierarchical equation of state inference nsbh gravitational waves"],
+      "weak_signals": ["neutron star radius black hole merger population", "tidal disruption nsbh equation of state", "multimessenger nsbh eos inference"],
+      "exclusions": ["binary neutron star equation of state only"],
+      "public_url": "https://arxiv.org/abs/2311.05689",
+      "contact_framing": "Share the NS-BH EOS framework as a directly relevant inference method."
+    },
+    {
+      "id": "neutron-star-inverse-cascades",
+      "name": "Neutron-star populations and inverse cascades",
+      "kind": "population-and-field-evolution",
+      "canonical_citations": [{
+        "title": "Confronting the neutron star population with inverse cascades",
+        "arxiv_id": "2305.14347",
+        "preferred_text": "Sarin et al. (2023), ApJL",
+        "url": "https://arxiv.org/abs/2305.14347"
+      }],
+      "aliases": ["neutron star inverse cascades", "inverse cascade pulsar population"],
+      "strong_signals": ["inverse cascades neutron star magnetic field evolution", "pulsar population inverse magnetic cascade"],
+      "weak_signals": ["young neutron star spin magnetic field population", "magnetic field decay pulsar birth distribution", "magnetar inverse cascade spin-down"],
+      "exclusions": ["fluid turbulence inverse cascade without neutron stars"],
+      "public_url": "https://arxiv.org/abs/2305.14347",
+      "contact_framing": "Share the population constraints where inverse-cascade field evolution is relevant."
+    },
+    {
+      "id": "nemokid-khz-observatory",
+      "name": "NEMO and the science case for a kilohertz GW observatory",
+      "kind": "instrument-science-case",
+      "canonical_citations": [{
+        "title": "NEMO: A proposed gravitational-wave detector for the kilohertz band",
+        "arxiv_id": "2110.10892",
+        "preferred_text": "Sarin & Lasky (2022), Publications of the Astronomical Society of Australia",
+        "url": "https://arxiv.org/abs/2110.10892"
+      }],
+      "aliases": ["nemo kilohertz gravitational wave observatory", "khz gravitational wave detector"],
+      "strong_signals": ["dedicated kilohertz gravitational wave observatory", "nemo high frequency gravitational wave detector"],
+      "weak_signals": ["post-merger gravitational wave detector design", "high frequency neutron star gravitational waves", "third generation detector kilohertz sensitivity"],
+      "exclusions": ["optical nemo instrument"],
+      "public_url": "https://arxiv.org/abs/2110.10892",
+      "contact_framing": "Offer the detector science case as relevant instrumentation context."
+    },
+    {
+      "id": "premature-neutron-star-collapse",
+      "name": "Premature collapse of neutron stars in short GRBs",
+      "kind": "model-and-interpretation",
+      "canonical_citations": [{
+        "title": "Gravitational waves or deconfined quarks: what causes the premature collapse of neutron stars born in short gamma-ray bursts?",
+        "arxiv_id": "2001.06102",
+        "preferred_text": "Sarin, Lasky & Ashton (2020), Physical Review D 101, 063021",
+        "url": "https://arxiv.org/abs/2001.06102"
+      }],
+      "aliases": ["premature neutron star collapse", "gravit quarks collapse short grb"],
+      "strong_signals": ["premature collapse neutron star short gamma ray burst", "deconfined quarks gravitational waves magnetar collapse"],
+      "weak_signals": ["supramassive neutron star collapse time", "short grb plateau collapse", "post-merger remnant phase transition"],
+      "exclusions": ["core collapse supernova proto-neutron star"],
+      "public_url": "https://arxiv.org/abs/2001.06102",
+      "contact_framing": "Share the competing-collapse-mechanism analysis where the remnant lifetime is central."
+    },
+    {
+      "id": "xray-guided-gw-search",
+      "name": "X-ray-guided GW searches for BNS merger remnants",
+      "kind": "search-method",
+      "canonical_citations": [{
+        "title": "X-ray guided gravitational-wave search for binary neutron star merger remnants",
+        "arxiv_id": "1805.01481",
+        "preferred_text": "Sarin et al. (2018), Physical Review D 98, 043011",
+        "url": "https://arxiv.org/abs/1805.01481"
+      }],
+      "aliases": ["x-ray guided gravitational wave search", "xray guided gw search"],
+      "strong_signals": ["x-ray guided gravitational wave search neutron star merger remnant", "electromagnetic constrained post-merger gravitational wave search"],
+      "weak_signals": ["targeted long-duration gravitational wave merger remnant", "x-ray plateau gravitational wave search window", "multimessenger post-merger search strategy"],
+      "exclusions": ["x-ray binary continuous gravitational wave search"],
+      "public_url": "https://arxiv.org/abs/1805.01481",
+      "contact_framing": "Share the X-ray-guided search method where electromagnetic timing informs a GW search."
     }
   ]
 }
