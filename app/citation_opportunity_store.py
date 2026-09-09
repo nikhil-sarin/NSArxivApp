@@ -55,6 +55,18 @@ def list_opportunities(status: str | None = None, limit: int = 100) -> list[dict
         db.close()
 
 
+def has_analysis(paper_id: str, contribution_id: str, analysis_version: str, catalogue_version: str) -> bool:
+    db = research_db.connect()
+    try:
+        return db.execute(
+            "SELECT 1 FROM citation_opportunities WHERE paper_id=? AND contribution_id=? "
+            "AND analysis_version=? AND catalogue_version=? LIMIT 1",
+            (paper_id, contribution_id, analysis_version, catalogue_version),
+        ).fetchone() is not None
+    finally:
+        db.close()
+
+
 def update_status(opportunity_id: str, status: str) -> None:
     if status not in {"proposed", "confirmed", "not_relevant", "needs_review", "exported"}:
         raise ValueError(f"invalid opportunity status: {status}")

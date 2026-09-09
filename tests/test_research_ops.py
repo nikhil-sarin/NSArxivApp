@@ -85,21 +85,28 @@ class ResearchOpsTests(unittest.TestCase):
                 "title": "Kilonova Opacity Inference",
                 "authors": ["Nikhil Sarin", "A. Person"],
                 "published": (now - timedelta(days=10)).isoformat(),
-                "summary": "Neural surrogate opacity inference for kilonova light curves.",
+                "abstract": "Neural surrogate opacity inference for kilonova light curves.",
             },
             {
                 "arxiv_id": "2609.00002",
                 "title": "Fast Opacity Constraints",
                 "authors": ["B. Person"],
                 "published": (now - timedelta(days=20)).isoformat(),
-                "summary": "Neural surrogate opacity constraints for kilonova models.",
+                "abstract": "Neural surrogate opacity constraints for kilonova models.",
+            },
+            {
+                "arxiv_id": "2609.00003",
+                "title": "Opacity Effects in Kilonovae",
+                "authors": ["D. Person"],
+                "published": (now - timedelta(days=30)).isoformat(),
+                "abstract": "Opacity changes the inferred kilonova ejecta composition.",
             },
             {
                 "arxiv_id": "2601.00001",
                 "title": "Older Transient Models",
                 "authors": ["C. Person"],
                 "published": (now - timedelta(days=150)).isoformat(),
-                "summary": "Analytic transient models and ejecta dynamics.",
+                "abstract": "Analytic transient models and ejecta dynamics.",
             },
         ]
         exported = synthesis.bibtex(papers[:1])

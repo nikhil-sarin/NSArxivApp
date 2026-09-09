@@ -23,6 +23,14 @@ def _gemini_post(url: str, api_key: str, payload: dict, timeout: int = 120) -> d
     return response.json()
 
 
+def _openai_chat_url() -> str:
+    base_url = os.getenv(
+        "OPENAI_BASE_URL",
+        "https://api.openai.com/v1",
+    ).rstrip("/")
+    return f"{base_url}/chat/completions"
+
+
 def _build_prompt(text: str, max_length: int, detailed: bool) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for the given mode."""
     if detailed:
@@ -335,7 +343,7 @@ class PaperSummarizer:
         if not api_key:
             raise ValueError("OPENAI_API_KEY not set")
         response = requests.post(
-            "https://api.openai.com/v1/chat/completions",
+            _openai_chat_url(),
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={
                 "model": self.model,
@@ -357,11 +365,12 @@ class PaperSummarizer:
         *,
         contains_private_data: bool = False,
     ) -> str:
-        """Prefer Gemini only when the active data-routing policy permits it."""
+        """Dispatch chat through the explicit public route while enforcing privacy."""
         api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        preferred_public = os.getenv("PUBLIC_LLM_PROVIDER", self._active_provider()).strip().lower()
         provider = privacy.choose_provider(
             self._active_provider(),
-            preferred_cloud_provider="gemini" if api_key else None,
+            preferred_cloud_provider=preferred_public,
             contains_private_data=contains_private_data,
         )
         if provider != "gemini":
@@ -429,7 +438,7 @@ class PaperSummarizer:
             if not api_key:
                 raise ValueError("OPENAI_API_KEY not set")
             response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
+                _openai_chat_url(),
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={"model": self.model, "max_tokens": 1024, "messages": [{"role": "system", "content": system}] + messages},
                 timeout=120,

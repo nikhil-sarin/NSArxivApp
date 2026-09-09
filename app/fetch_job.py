@@ -20,6 +20,7 @@ from app.pdf_extractor import PDFExtractor
 from app.summarizer import PaperSummarizer
 from app.summary_workflow import summarize_with_fallback
 from app.vector_db import PaperVectorDB
+from app import citation_discovery
 
 MAX_EMPTY_DATE_LOOKBACK_DAYS = 7
 
@@ -73,6 +74,15 @@ def _save_new_papers(
             summary=summary,
             metadata=chroma_meta,
         )
+        if citation_discovery.enabled():
+            try:
+                discovery = citation_discovery.discover_paper({**metadata, "summary": summary}, text)
+                print(
+                    f"  [citations] checked={discovery['checked']} "
+                    f"judged={discovery['model_judgements']} reviewable={discovery['reviewable']}"
+                )
+            except Exception as exc:
+                print(f"  [warn] citation discovery failed for {pid}: {exc}")
         new_count += 1
     return new_count
 

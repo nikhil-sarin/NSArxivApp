@@ -154,8 +154,13 @@ LLM_MODEL=claude-3-5-haiku-20241022  # optional
 ```
 SUMMARIZER_PROVIDER=openai
 OPENAI_API_KEY=your-key-here
+OPENAI_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini                # optional
 ```
+
+`OPENAI_BASE_URL` may point to an OpenAI-compatible service; the app appends
+`/chat/completions`. Set `PUBLIC_LLM_PROVIDER=openai` to keep public-paper chat
+on this route even if Gemini credentials are also present.
 
 ### Remote Ollama (workstation offload)
 
@@ -254,7 +259,7 @@ Use the **Schedule** tab in the app UI to generate and install a launchd plist a
 6. **Knowledge graph**: Visualize category and author connections in the Knowledge Graph tab
 7. **Schedule**: Set up automated daily fetching in the Schedule tab
 8. **Projects**: Attach repositories, a Notion Markdown export, meetings, and paper evidence; imported TheLocalWhisperer actions remain proposals until explicitly approved
-9. **Research Ops**: Run background full-text indexing, inspect durable job state, compare model routes, and track emerging themes over time
+9. **Library Health**: Inspect search indexing and model checks, and review supported trends with representative papers
 
 ---
 
@@ -297,7 +302,7 @@ Imports always enter `proposed` state. The app does not execute an action, and a
 
 `config/contributions.example.json` contains the validated catalogue schema and verified Redback citation metadata. Copy it to the ignored `config/contributions.json` to customize private scope notes, or point `NSARXIV_CONTRIBUTIONS_PATH` at another file. Disabled entries are never analysed.
 
-The **Citation Opportunities** view runs deterministic signal/reference checks before asking a model for a strict evidence-grounded judgement. Analysis is manual; the 20-case fixed evaluation manifest in `tests/fixtures/citation_opportunities/` must be reviewed and tuned before enabling any future background scan.
+Newly ingested papers are checked automatically using deterministic signal and reference filters before any model call. Only filtered candidates receive a strict evidence-grounded model judgement. The **Citation Opportunities** view is the manual review and export queue; its advanced controls can rerun a specific paper when the contribution catalogue changes.
 
 Only `strong_citation_opportunity` and `potentially_useful` findings can be confirmed. Confirmation posts a stable, bounded ImportBundle to `LOCAL_ORCHESTRATOR_URL`; it includes quotes and catalogue metadata, never full paper text or secrets. LocalOrchestrator then requires separate candidate and exact-plan approval before a local model can generate editable subject/body text. Neither app sends email or creates a Gmail draft.
 

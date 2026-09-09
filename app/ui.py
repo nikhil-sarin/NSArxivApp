@@ -44,10 +44,10 @@ from app import handwritten_notes
 from app import index_jobs
 from app import synthesis
 from app import trends
-from app import citation_evidence
 from app import citation_opportunities
 from app import citation_opportunity_store
 from app import contribution_catalogue
+from app import citation_discovery
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -216,8 +216,6 @@ def render_sidebar():
         "anthropic": "claude-3-5-haiku-20241022",
         "openai": "gpt-4o-mini",
     }.get(summ_provider, summ_provider)
-    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    chat_model = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash") if has_gemini else summ_model
     # Add paper by URL or ID
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Add paper by ArXiv URL or ID**")
@@ -234,7 +232,7 @@ def render_sidebar():
             st.sidebar.warning("Please enter an ArXiv URL or ID.")
 
     st.sidebar.markdown("---")
-    preferred_chat = "gemini" if has_gemini else summ_provider
+    preferred_chat = os.getenv("PUBLIC_LLM_PROVIDER", summ_provider).strip().lower()
     public_provider = privacy.choose_provider(
         summ_provider,
         preferred_cloud_provider=preferred_chat,
@@ -556,7 +554,7 @@ def _render_report_controls(paper: Dict, pid: str, *, key_prefix: str):
     )
 
 
-def _store_paper(pid: str, metadata: Dict, summary: str):
+def _store_paper(pid: str, metadata: Dict, summary: str, paper_text: str = ""):
     """Persist a paper to JSON store, vector DB, and knowledge graph."""
     paper_store.save_paper(pid, metadata, summary)
 
@@ -593,6 +591,7 @@ def _store_paper(pid: str, metadata: Dict, summary: str):
     st.session_state.kg.add_paper(pid, metadata)
     st.session_state.kg.connect_by_category(pid, metadata.get("categories", []))
     st.session_state.kg.connect_by_author(pid, metadata.get("authors", []))
+    citation_discovery.enqueue_paper({**metadata, "summary": summary}, paper_text)
 
 
 def _parse_arxiv_id(raw: str) -> str:
@@ -648,7 +647,7 @@ def _ingest_by_arxiv_id(raw_input: str, in_sidebar: bool = False):
                 return
 
         metadata["summary"] = summary
-        _store_paper(pid, metadata, summary)
+        _store_paper(pid, metadata, summary, text)
         st.session_state.papers.append(metadata)
         st.success(f"Added: {metadata['title'][:60]}...")
 
@@ -740,7 +739,7 @@ def render_search_results(query: str, author: str, categories: List[str], max_re
                 st.warning(f"Skipping {pid}: no readable full text or abstract was available.")
                 continue
             metadata["summary"] = summary
-            _store_paper(pid, metadata, summary)
+            _store_paper(pid, metadata, summary, texts.get(pid, ""))
             if pid not in existing_ids:
                 st.session_state.papers.append(metadata)
                 existing_ids.add(pid)
@@ -784,11 +783,17 @@ def render_multi_paper_chat():
     if st.session_state.get(f"{context_key}_ids") != context_ids:
         with st.spinner("Loading paper texts..."):
             parts = []
-            has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+            public_provider = privacy.choose_provider(
+                st.session_state.summarizer._active_provider(),
+                preferred_cloud_provider=os.getenv(
+                    "PUBLIC_LLM_PROVIDER", st.session_state.summarizer._active_provider()
+                ),
+                contains_private_data=False,
+            )
             for p in selected_papers:
                 pid = p.get("arxiv_id", "")
                 text = _get_paper_text(pid, p)
-                parts.append(_paper_source_context(pid, p, text, max_chunks=None if has_gemini else 4))
+                parts.append(_paper_source_context(pid, p, text, max_chunks=None if public_provider == "gemini" else 4))
             st.session_state[context_key] = "\n\n".join(parts)
             st.session_state[f"{context_key}_ids"] = context_ids
 
@@ -847,7 +852,7 @@ def render_vector_search():
                     if url:
                         st.link_button("Open source", url)
         else:
-            st.info("No indexed sources matched. Index full papers from Research Ops if needed.")
+            st.info("No indexed sources matched. Check the search index in Library Health.")
 
     st.markdown("---")
     render_multi_paper_chat()
@@ -1194,10 +1199,11 @@ def render_paper_chat(pid: str, paper: Dict):
     history = st.session_state.get(history_key, [])
 
     source = st.session_state.get(f"chat_text_source_{pid}", "")
-    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
     provider = privacy.choose_provider(
         st.session_state.summarizer._active_provider(),
-        preferred_cloud_provider="gemini" if has_gemini else None,
+        preferred_cloud_provider=os.getenv(
+            "PUBLIC_LLM_PROVIDER", st.session_state.summarizer._active_provider()
+        ),
         contains_private_data=bool(_notes_lines(paper)),
     )
     st.markdown("**Chat with this paper**")
@@ -1872,8 +1878,7 @@ def render_assistant():
         return
 
     n = len(papers)
-    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    model_name = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash") if has_gemini else st.session_state.summarizer._active_model()
+    model_name = st.session_state.summarizer._active_model()
     st.caption(f"{n} papers in library — model: {model_name}")
 
     mode = st.radio(
@@ -2901,14 +2906,21 @@ def render_projects():
 
 def render_research_ops():
     """Render corpus trends, background indexing, and measured model routes."""
-    st.header("Research Ops")
-    trends_tab, indexing_tab, eval_tab = st.tabs(["Emerging themes", "Indexing", "Model evaluation"])
+    st.header("Library Health")
+    trends_tab, indexing_tab, eval_tab = st.tabs(["Trends", "Search index", "Model checks"])
 
     with trends_tab:
         window = st.slider("Recent window (days)", 30, 365, 90, 30)
         rows = trends.emerging_themes(paper_store.load_all_papers(), recent_days=window)
         if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            trend_rows = [{
+                "theme": row["theme"],
+                "evidence": row["basis"],
+                "title support": row["title_support"],
+                "growth": f"{row['lift']:.1f}x",
+                "representative papers": " | ".join(row["examples"]),
+            } for row in rows]
+            st.dataframe(pd.DataFrame(trend_rows), width="stretch", hide_index=True)
         else:
             st.info("Not enough papers occur in both comparison windows yet.")
 
@@ -2973,7 +2985,7 @@ def render_research_ops():
 
 
 def render_citation_opportunities():
-    """Render manual, evidence-first citation-opportunity review and export."""
+    """Render the automatically populated evidence-review and export queue."""
     st.header("Citation Opportunities")
     try:
         catalogue = contribution_catalogue.load()
@@ -2986,51 +2998,43 @@ def render_citation_opportunities():
         st.info("A stored paper and at least one enabled catalogue contribution are required.")
         return
 
-    paper_options = {_paper_label(paper): paper for paper in sorted(papers, key=_published_sort_key, reverse=True)}
-    contribution_options = {item["name"]: item for item in contributions}
-    paper_label = st.selectbox("Paper to analyse", list(paper_options), key="citation_paper")
-    contribution_label = st.selectbox("Contribution", list(contribution_options), key="citation_contribution")
-    paper = paper_options[paper_label]
-    contribution = contribution_options[contribution_label]
-    if st.button("Analyse evidence", type="primary", key="analyse_citation"):
-        paper_id = paper.get("arxiv_id", "")
-        with st.spinner("Extracting bounded evidence and checking references..."):
+    discovery_jobs = [job for job in index_jobs.list_jobs() if job["kind"] == "citation_discovery"]
+    pending_count = sum(job["status"] in {"queued", "running"} for job in discovery_jobs)
+    failed_count = sum(job["status"] == "failed" for job in discovery_jobs)
+    all_opportunities = citation_opportunity_store.list_opportunities()
+    reviewable = [
+        item for item in all_opportunities
+        if item["classification"] in {"strong_citation_opportunity", "potentially_useful"}
+        and item["status"] in {"proposed", "needs_review"}
+    ]
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Awaiting review", len(reviewable))
+    metric_cols[1].metric("Checks running", pending_count)
+    metric_cols[2].metric("Failed checks", failed_count)
+
+    with st.expander("Recheck a paper", expanded=False):
+        paper_options = {_paper_label(paper): paper for paper in sorted(papers, key=_published_sort_key, reverse=True)}
+        paper_label = st.selectbox("Paper", list(paper_options), key="citation_paper")
+        paper = paper_options[paper_label]
+        if st.button("Queue recheck", key="analyse_citation"):
             try:
-                corpus_index.index_paper(
-                    paper,
-                    arxiv_client=st.session_state.arxiv,
-                    pdf_extractor=st.session_state.pdf_extractor,
-                    vector_db=st.session_state.vdb,
-                )
+                paper_id = paper.get("arxiv_id", "")
                 full_text = _get_paper_text(paper_id, paper)
-                packet = citation_evidence.build_evidence_packet(
-                    paper_id,
-                    full_text,
-                    contribution,
-                    owner_name_variants=catalogue.get("owner_name_variants", [catalogue["owner"]]),
-                    corpus_chunks=research_db.documents_for_owner("paper_content", paper_id),
-                )
-                provider = privacy.choose_provider(
-                    st.session_state.summarizer._active_provider(), contains_private_data=False
-                )
-                judge_model = PaperSummarizer(provider=provider)
-                citation_opportunities.judge(
-                    packet,
-                    contribution,
-                    catalogue_version=catalogue["schema_version"],
-                    complete=lambda system, user: judge_model.complete(system, user, max_length=900),
-                    provider=provider,
-                    model_name=judge_model._active_model(),
-                )
+                job_id = citation_discovery.enqueue_paper(paper, full_text, force=True)
             except Exception as exc:
-                st.error(f"Analysis failed: {exc}")
+                st.error(f"Could not queue recheck: {exc}")
             else:
-                st.success("Analysis stored for review.")
-                st.rerun()
+                st.success(f"Queued {job_id[:8]}.")
 
     by_id = {item["id"]: item for item in catalogue["contributions"]}
     papers_by_id = {paper.get("arxiv_id", ""): paper for paper in papers}
-    for opportunity in citation_opportunity_store.list_opportunities():
+    displayed = reviewable + [
+        item for item in all_opportunities
+        if item not in reviewable and item["status"] in {"confirmed", "exported"}
+    ]
+    if not displayed:
+        st.info("No evidence-backed opportunities are awaiting review.")
+    for opportunity in displayed:
         source_paper = papers_by_id.get(opportunity["paper_id"], {"title": opportunity["paper_id"], "authors": []})
         matched = by_id.get(opportunity["contribution_id"], {"name": opportunity["contribution_id"], "canonical_citations": []})
         with st.expander(f"{source_paper.get('title')} - {opportunity['classification']}", expanded=False):
@@ -3087,7 +3091,7 @@ def main():
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
         "Inbox", "Semantic Search", "Knowledge Graph", "Library",
         "Assistant", "Lit Review", "Projects", "Paper Ideas", "Grant Ideas",
-        "Citation Opportunities", "Research Ops", "Schedule", "Profile",
+        "Citation Opportunities", "Library Health", "Schedule", "Profile",
     ])
 
     with tab1:
