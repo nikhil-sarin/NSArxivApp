@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "owner": "Nikhil Sarin",
+  "owner_name_variants": ["N. Sarin", "N Sarin", "Nikhil Sarin"],
+  "contributions": [
+    {
+      "id": "redback",
+      "name": "Redback",
+      "kind": "software",
+      "canonical_citations": [
+        {
+          "title": "REDBACK: a Bayesian inference software package for electromagnetic transients",
+          "doi": "10.1093/mnras/stae1238",
+          "arxiv_id": "2308.12806",
+          "bibcode": "2024MNRAS.531.1203S",
+          "preferred_text": "Sarin et al. (2024), MNRAS 531, 1203",
+          "url": "https://doi.org/10.1093/mnras/stae1238"
+        }
+      ],
+      "aliases": ["redback", "redback software", "redback package"],
+      "strong_signals": [
+        "bilby transient light curve inference",
+        "bayesian electromagnetic transient modelling",
+        "simulate and fit electromagnetic transients"
+      ],
+      "weak_signals": [
+        "transient parameter inference",
+        "magnetar powered transient modelling",
+        "kilonova light curve modelling"
+      ],
+      "exclusions": ["bilby gravitational wave inference"],
+      "public_url": "https://github.com/nikhil-sarin/redback",
+      "contact_framing": "Offer Redback as potentially relevant software and invite discussion; never imply misconduct."
+    },
+    {
+      "id": "csm-framework",
+      "name": "Generalised CSM-interaction framework",
+      "kind": "software-and-method",
+      "unpublished": true,
+      "canonical_citations": [
+        {
+          "title": "From mass-loss histories to lightcurves: a generalised framework for interaction-powered transients",
+          "preferred_text": "Sarin & Hirai, in preparation",
+          "url": "https://github.com/nikhil-sarin/redback-csm"
+        }
+      ],
+      "aliases": ["redback-csm"],
+      "strong_signals": ["thin shell arbitrary circumstellar density profile", "inference of time variable mass loss history"],
+      "weak_signals": ["circumstellar interaction light curve inference", "multi shell circumstellar medium modelling"],
+      "exclusions": ["hydrodynamical simulation without light curve inference"],
+      "public_url": "https://github.com/nikhil-sarin/redback-csm",
+      "contact_framing": "Offer the unpublished modelling framework as potentially useful and invite technical discussion; do not describe it as a missed citation."
+    },
+    {
+      "id": "mixing-work-placeholder",
+      "name": "Mixing contribution - replace with user-verified scope",
+      "kind": "unpublished-placeholder",
+      "unpublished": true,
+      "enabled": false,
+      "canonical_citations": [],
+      "aliases": ["mixing work placeholder"],
+      "strong_signals": ["replace with verified direct-use signal"],
+      "weak_signals": ["replace with verified topical signal"],
+      "exclusions": [],
+      "contact_framing": "Disabled until Nikhil supplies the exact contribution, scope, and preferred citation."
+    }
+  ]
+}

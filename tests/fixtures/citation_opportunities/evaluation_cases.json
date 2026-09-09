@@ -1,0 +1,22 @@
+[
+  {"id":"strong-1","label":"strong_citation_opportunity","text":"We use Bilby for transient light curve inference and fit optical data."},
+  {"id":"strong-2","label":"strong_citation_opportunity","text":"Our Bayesian electromagnetic transient modelling fits the event photometry."},
+  {"id":"strong-3","label":"strong_citation_opportunity","text":"We simulate and fit electromagnetic transients with nested sampling."},
+  {"id":"strong-4","label":"strong_citation_opportunity","text":"A thin shell with arbitrary circumstellar density profile powers the fit."},
+  {"id":"strong-5","label":"strong_citation_opportunity","text":"We infer a time variable mass loss history from the interaction light curve."},
+  {"id":"useful-1","label":"potentially_useful","text":"We perform transient parameter inference using a custom pipeline."},
+  {"id":"useful-2","label":"potentially_useful","text":"The study performs kilonova light curve modelling."},
+  {"id":"useful-3","label":"potentially_useful","text":"Circumstellar interaction light curve inference is planned for later work."},
+  {"id":"useful-4","label":"potentially_useful","text":"We discuss multi shell circumstellar medium modelling."},
+  {"id":"useful-5","label":"potentially_useful","text":"Magnetar powered transient modelling may explain the source."},
+  {"id":"negative-1","label":"not_relevant","text":"We classify galaxy morphologies using convolutional networks."},
+  {"id":"negative-2","label":"not_relevant","text":"The binary black-hole waveform is inferred from strain data."},
+  {"id":"negative-3","label":"not_relevant","text":"We measure exoplanet atmospheric chemistry."},
+  {"id":"negative-4","label":"not_relevant","text":"This work studies cosmological large-scale structure."},
+  {"id":"negative-5","label":"not_relevant","text":"We model stellar oscillation frequencies."},
+  {"id":"cited-1","label":"not_relevant","canonical_citation_present":true,"text":"Bilby transient light curve inference. References DOI 10.1093/mnras/stae1238"},
+  {"id":"cited-2","label":"not_relevant","canonical_citation_present":true,"text":"Transient inference. References arXiv:2308.12806"},
+  {"id":"cited-3","label":"not_relevant","canonical_citation_present":true,"text":"Transient inference. References 2024MNRAS.531.1203S"},
+  {"id":"bad-1","label":"insufficient_evidence","text":"[extraction failed]"},
+  {"id":"bad-2","label":"insufficient_evidence","text":"meth ods res ults unread able"}
+]

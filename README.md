@@ -14,6 +14,7 @@ A full-stack application to discover, summarize, and explore connections between
 - **Project intelligence**: Link papers, inspect Git/Notion-export changes, record meetings, and generate private weekly briefings
 - **Research operations**: Emerging-theme detection, durable background indexing jobs, index repair, and persisted model evaluations
 - **Handwritten notes**: Local vision-model transcription directly into citation-aware paper notes
+- **Citation opportunities**: Manually compare a full paper with a versioned personal contribution catalogue, inspect verbatim evidence/reference checks, and explicitly propose a local email-draft action
 - **Knowledge graph**: Visualize connections between papers by category and authors
 - **Persistent library**: Papers, summaries, and metadata are saved locally and reload automatically on restart
 - **Scheduled fetch**: Run automated daily searches or ArXivSelaa-style new-submission fetches via cron or macOS launchd
@@ -291,6 +292,14 @@ Upload a JSON list in a project's **Actions** view. Only these action types are 
 ```
 
 Imports always enter `proposed` state. The app does not execute an action, and an action cannot be marked `executed` until it has first been explicitly approved.
+
+### Citation-opportunity workflow
+
+`config/contributions.example.json` contains the validated catalogue schema and verified Redback citation metadata. Copy it to the ignored `config/contributions.json` to customize private scope notes, or point `NSARXIV_CONTRIBUTIONS_PATH` at another file. Disabled entries are never analysed.
+
+The **Citation Opportunities** view runs deterministic signal/reference checks before asking a model for a strict evidence-grounded judgement. Analysis is manual; the 20-case fixed evaluation manifest in `tests/fixtures/citation_opportunities/` must be reviewed and tuned before enabling any future background scan.
+
+Only `strong_citation_opportunity` and `potentially_useful` findings can be confirmed. Confirmation posts a stable, bounded ImportBundle to `LOCAL_ORCHESTRATOR_URL`; it includes quotes and catalogue metadata, never full paper text or secrets. LocalOrchestrator then requires separate candidate and exact-plan approval before a local model can generate editable subject/body text. Neither app sends email or creates a Gmail draft.
 
 ---
 

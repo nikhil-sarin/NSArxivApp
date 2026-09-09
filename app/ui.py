@@ -44,6 +44,10 @@ from app import handwritten_notes
 from app import index_jobs
 from app import synthesis
 from app import trends
+from app import citation_evidence
+from app import citation_opportunities
+from app import citation_opportunity_store
+from app import contribution_catalogue
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -2968,6 +2972,108 @@ def render_research_ops():
             } for run in runs]), use_container_width=True, hide_index=True)
 
 
+def render_citation_opportunities():
+    """Render manual, evidence-first citation-opportunity review and export."""
+    st.header("Citation Opportunities")
+    try:
+        catalogue = contribution_catalogue.load()
+    except contribution_catalogue.CatalogueError as exc:
+        st.error(str(exc))
+        return
+    contributions = [item for item in catalogue["contributions"] if item.get("enabled", True)]
+    papers = paper_store.load_all_papers()
+    if not papers or not contributions:
+        st.info("A stored paper and at least one enabled catalogue contribution are required.")
+        return
+
+    paper_options = {_paper_label(paper): paper for paper in sorted(papers, key=_published_sort_key, reverse=True)}
+    contribution_options = {item["name"]: item for item in contributions}
+    paper_label = st.selectbox("Paper to analyse", list(paper_options), key="citation_paper")
+    contribution_label = st.selectbox("Contribution", list(contribution_options), key="citation_contribution")
+    paper = paper_options[paper_label]
+    contribution = contribution_options[contribution_label]
+    if st.button("Analyse evidence", type="primary", key="analyse_citation"):
+        paper_id = paper.get("arxiv_id", "")
+        with st.spinner("Extracting bounded evidence and checking references..."):
+            try:
+                corpus_index.index_paper(
+                    paper,
+                    arxiv_client=st.session_state.arxiv,
+                    pdf_extractor=st.session_state.pdf_extractor,
+                    vector_db=st.session_state.vdb,
+                )
+                full_text = _get_paper_text(paper_id, paper)
+                packet = citation_evidence.build_evidence_packet(
+                    paper_id,
+                    full_text,
+                    contribution,
+                    owner_name_variants=catalogue.get("owner_name_variants", [catalogue["owner"]]),
+                    corpus_chunks=research_db.documents_for_owner("paper_content", paper_id),
+                )
+                provider = privacy.choose_provider(
+                    st.session_state.summarizer._active_provider(), contains_private_data=False
+                )
+                judge_model = PaperSummarizer(provider=provider)
+                citation_opportunities.judge(
+                    packet,
+                    contribution,
+                    catalogue_version=catalogue["schema_version"],
+                    complete=lambda system, user: judge_model.complete(system, user, max_length=900),
+                    provider=provider,
+                    model_name=judge_model._active_model(),
+                )
+            except Exception as exc:
+                st.error(f"Analysis failed: {exc}")
+            else:
+                st.success("Analysis stored for review.")
+                st.rerun()
+
+    by_id = {item["id"]: item for item in catalogue["contributions"]}
+    papers_by_id = {paper.get("arxiv_id", ""): paper for paper in papers}
+    for opportunity in citation_opportunity_store.list_opportunities():
+        source_paper = papers_by_id.get(opportunity["paper_id"], {"title": opportunity["paper_id"], "authors": []})
+        matched = by_id.get(opportunity["contribution_id"], {"name": opportunity["contribution_id"], "canonical_citations": []})
+        with st.expander(f"{source_paper.get('title')} - {opportunity['classification']}", expanded=False):
+            st.markdown(f"[{source_paper.get('title')}](https://arxiv.org/abs/{opportunity['paper_id']})")
+            st.metric("Confidence", f"{opportunity['confidence']:.0%}")
+            citation = citation_opportunities.preferred_citation(matched)
+            st.markdown(f"**Contribution:** {matched.get('name')}  \n**Preferred citation:** {citation.get('preferred_text') or citation.get('title', 'Not published')}" )
+            st.markdown("**Paper evidence**")
+            for evidence in opportunity.get("evidence", []):
+                st.caption(evidence["locator"])
+                st.info(evidence["quote"])
+            st.markdown(f"**Rationale:** {opportunity['rationale']}")
+            st.markdown(f"**Strongest counterargument:** {opportunity['counterargument']}")
+            with st.expander("Reference check"):
+                st.json(opportunity["reference_check"])
+            tone_note = st.text_input("Optional tone note", key=f"citation_tone_{opportunity['opportunity_id']}")
+            confirm_col, reject_col, review_col = st.columns(3)
+            can_export = opportunity["classification"] in {"strong_citation_opportunity", "potentially_useful"}
+            if confirm_col.button(
+                "Confirm and propose draft",
+                key=f"confirm_citation_{opportunity['opportunity_id']}",
+                disabled=not can_export,
+            ):
+                try:
+                    citation_opportunity_store.update_status(opportunity["opportunity_id"], "confirmed")
+                    confirmed = {**opportunity, "status": "confirmed"}
+                    citation_opportunities.export_bundle(confirmed, source_paper, matched, tone_note=tone_note)
+                except Exception as exc:
+                    st.error(str(exc))
+                else:
+                    st.success("Confirmed opportunity imported into LocalOrchestrator for separate approval.")
+                    st.rerun()
+            if reject_col.button("Not relevant", key=f"reject_citation_{opportunity['opportunity_id']}"):
+                citation_opportunity_store.update_status(opportunity["opportunity_id"], "not_relevant")
+                st.rerun()
+            if review_col.button("Needs review", key=f"review_citation_{opportunity['opportunity_id']}"):
+                citation_opportunity_store.update_status(opportunity["opportunity_id"], "needs_review")
+                st.rerun()
+            st.caption(f"Status: {opportunity['status']} | export: {opportunity.get('export_status') or 'not exported'}")
+            if opportunity.get("export_error"):
+                st.warning(opportunity["export_error"])
+
+
 def main():
     init_session_state()
     _auto_sync_papers_from_store()
@@ -2978,10 +3084,10 @@ def main():
     if query is not None:  # None means Search button was not pressed
         render_search_results(query, author, categories, max_results, date_from)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
         "Inbox", "Semantic Search", "Knowledge Graph", "Library",
         "Assistant", "Lit Review", "Projects", "Paper Ideas", "Grant Ideas",
-        "Research Ops", "Schedule", "Profile",
+        "Citation Opportunities", "Research Ops", "Schedule", "Profile",
     ])
 
     with tab1:
@@ -3003,10 +3109,12 @@ def main():
     with tab9:
         render_grant_ideas()
     with tab10:
-        render_research_ops()
+        render_citation_opportunities()
     with tab11:
-        render_schedule()
+        render_research_ops()
     with tab12:
+        render_schedule()
+    with tab13:
         render_profile()
 
 

@@ -12,7 +12,7 @@ from typing import Iterator, Optional
 
 
 DB_PATH = Path("data/research.db")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _now() -> str:
@@ -167,6 +167,22 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             PRIMARY KEY(idea_type, idea_id)
         );
+
+        CREATE TABLE IF NOT EXISTS citation_opportunities (
+            opportunity_id TEXT PRIMARY KEY,
+            paper_id TEXT NOT NULL,
+            contribution_id TEXT NOT NULL,
+            analysis_version TEXT NOT NULL,
+            catalogue_version TEXT NOT NULL,
+            classification TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            status TEXT NOT NULL DEFAULT 'proposed',
+            data_json TEXT NOT NULL,
+            export_status TEXT NOT NULL DEFAULT '',
+            export_error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """
     )
     connection.execute(
@@ -312,6 +328,23 @@ def has_documents(owner_type: str, owner_id: str, kind: Optional[str] = None) ->
             sql += " AND kind=?"
             params.append(kind)
         return db.execute(sql + " LIMIT 1", params).fetchone() is not None
+    finally:
+        db.close()
+
+
+def documents_for_owner(owner_type: str, owner_id: str, limit: int = 200) -> list[dict]:
+    db = connect()
+    try:
+        rows = db.execute(
+            "SELECT * FROM documents WHERE owner_type=? AND owner_id=? ORDER BY document_id LIMIT ?",
+            (owner_type, owner_id, limit),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["locator"] = json.loads(item.pop("locator_json") or "{}")
+            result.append(item)
+        return result
     finally:
         db.close()
 
