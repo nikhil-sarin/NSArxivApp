@@ -57,6 +57,19 @@ class ProjectActionTests(unittest.TestCase):
         action_contract.update_status(action_id, "executed")
         self.assertEqual(action_contract.list_actions()[0]["status"], "executed")
 
+    def test_external_handoff_imports_only_valid_proposals(self):
+        ids = action_contract.import_proposals(
+            "TheLocalWhisperer",
+            [{"action_type": "task.create", "title": "Read paper", "payload": {"paper_id": "2609.1"}}],
+        )
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(action_contract.list_actions()[0]["status"], "proposed")
+        with self.assertRaises(ValueError):
+            action_contract.import_proposals(
+                "TheLocalWhisperer",
+                [{"action_type": "shell.execute", "title": "Unsafe", "payload": {}}],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

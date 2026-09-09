@@ -1,30 +1,62 @@
-"""Persistent store for paper and grant ideas at data/ideas.json."""
+"""Transactional paper and grant idea persistence with legacy JSON import."""
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from app import research_db
 
 STORE_PATH = Path("data/ideas.json")
 
 
 def _load() -> Dict:
-    if not STORE_PATH.exists():
-        return {"paper": {}, "grant": {}}
+    _migrate_legacy_if_needed()
+    data = {"paper": {}, "grant": {}}
+    db = research_db.connect()
     try:
-        data = json.loads(STORE_PATH.read_text())
-        # Ensure both keys exist
-        data.setdefault("paper", {})
-        data.setdefault("grant", {})
-        return data
-    except Exception:
-        return {"paper": {}, "grant": {}}
+        for row in db.execute("SELECT idea_type, idea_id, data_json FROM ideas ORDER BY created_at"):
+            data.setdefault(row["idea_type"], {})[row["idea_id"]] = json.loads(row["data_json"])
+    finally:
+        db.close()
+    return data
 
 
 def _save(data: Dict):
-    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STORE_PATH.write_text(json.dumps(data, indent=2, default=str))
+    now = datetime.now(timezone.utc).isoformat()
+    with research_db.transaction() as db:
+        db.execute("DELETE FROM ideas")
+        for idea_type, ideas in data.items():
+            for idea_id, idea in ideas.items():
+                created = str(idea.get("created") or now)
+                db.execute(
+                    "INSERT INTO ideas(idea_type, idea_id, data_json, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
+                    (idea_type, idea_id, json.dumps(idea, default=str), created, now),
+                )
+
+
+def _migrate_legacy_if_needed() -> None:
+    db = research_db.connect()
+    try:
+        if db.execute("SELECT 1 FROM ideas LIMIT 1").fetchone() or not STORE_PATH.exists():
+            return
+    finally:
+        db.close()
+    try:
+        legacy = json.loads(STORE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with research_db.transaction() as db:
+        if db.execute("SELECT 1 FROM ideas LIMIT 1").fetchone():
+            return
+        for idea_type in ("paper", "grant"):
+            for idea_id, idea in legacy.get(idea_type, {}).items():
+                db.execute(
+                    "INSERT INTO ideas(idea_type, idea_id, data_json, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
+                    (idea_type, idea_id, json.dumps(idea, default=str), str(idea.get("created") or now), now),
+                )
 
 
 def save_idea(idea_type: str, title: str, description: str, extra: Optional[Dict] = None) -> str:
@@ -36,7 +68,7 @@ def save_idea(idea_type: str, title: str, description: str, extra: Optional[Dict
         "title": title,
         "description": description,
         "status": "draft",
-        "created": datetime.now().isoformat(),
+        "created": datetime.now(timezone.utc).isoformat(),
         "chat_history": [],
         "linked_papers": [],
         "notes": "",

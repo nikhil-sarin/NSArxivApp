@@ -59,6 +59,7 @@ class PaperSummarizer:
 
     def __init__(self, provider: Optional[str] = None, model: Optional[str] = None):
         self.provider = (provider or os.getenv("SUMMARIZER_PROVIDER", "ollama")).lower()
+        self._explicit_model = model
         self.model = model or os.getenv("LLM_MODEL", "")
         # Provider-specific defaults
         self._defaults = {
@@ -75,6 +76,8 @@ class PaperSummarizer:
         return os.getenv("SUMMARIZER_PROVIDER", self.provider).lower()
 
     def _active_model(self) -> str:
+        if self._explicit_model:
+            return self._explicit_model
         override = os.getenv("LLM_MODEL", "")
         if override:
             return override
@@ -158,53 +161,42 @@ class PaperSummarizer:
         return chunks
 
     def _build_quick_summary_text(self, text: str) -> str:
-        """Build a focused excerpt for concise summaries of long papers."""
+        """Build an ordered, section-aware excerpt spanning a long paper."""
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
         if not paragraphs:
             return text[: self.CONTEXT_LIMIT]
+        selected: set[int] = set()
+        used = 0
 
-        selected: list[str] = []
-        selected_set: set[str] = set()
-
-        def add_paragraphs(candidates: list[str], budget: int) -> None:
-            used = 0
-            for paragraph in candidates:
-                if paragraph in selected_set:
-                    continue
-                addition = len(paragraph) + (2 if selected else 0)
-                if used and used + addition > budget:
-                    break
-                selected.append(paragraph)
-                selected_set.add(paragraph)
+        def add(index: int) -> None:
+            nonlocal used
+            addition = len(paragraphs[index]) + 2
+            if index not in selected and used + addition <= self.CONTEXT_LIMIT:
+                selected.add(index)
                 used += addition
 
-        add_paragraphs(paragraphs, self.QUICK_SUMMARY_HEAD_CHARS)
-
-        tail_keywords = (
-            "conclusion",
-            "conclusions",
-            "discussion",
-            "results",
-            "summary",
-            "we find",
-            "we show",
-            "we present",
-            "in this paper",
+        # Abstract/introduction and conclusion are high value, but methods and
+        # results can occur anywhere in extracted PDF text.
+        for index in range(min(8, len(paragraphs))):
+            add(index)
+        section_keywords = (
+            "method", "approach", "model", "data", "observation", "experiment",
+            "result", "finding", "discussion", "limitation", "conclusion", "summary",
         )
-        tail_candidates = [
-            paragraph
-            for paragraph in paragraphs[-20:]
-            if any(keyword in paragraph.lower() for keyword in tail_keywords)
-        ]
-        if not tail_candidates:
-            tail_candidates = paragraphs[-6:]
-
-        add_paragraphs(tail_candidates, self.QUICK_SUMMARY_TAIL_CHARS)
-
-        focused_text = "\n\n".join(selected)
-        if len(focused_text) > self.CONTEXT_LIMIT:
-            return focused_text[: self.CONTEXT_LIMIT]
-        return focused_text
+        for index, paragraph in enumerate(paragraphs):
+            lower = paragraph.lower()
+            if any(keyword in lower for keyword in section_keywords):
+                add(index)
+                if index + 1 < len(paragraphs):
+                    add(index + 1)
+        # Fill remaining capacity with evenly spaced body evidence, preventing
+        # papers with weak heading extraction from collapsing to head/tail only.
+        stride = max(1, len(paragraphs) // 12)
+        for index in range(8, len(paragraphs), stride):
+            add(index)
+        for index in range(max(0, len(paragraphs) - 6), len(paragraphs)):
+            add(index)
+        return "\n\n".join(paragraphs[index] for index in sorted(selected))
 
     def _summarize_section(self, chunk: str, chunk_index: int, total_chunks: int, max_length: int, detailed: bool) -> str:
         """Summarize one chunk of a long paper."""
@@ -285,7 +277,7 @@ class PaperSummarizer:
 
     def _call_ollama(self, system: str, user: str, max_length: int, detailed: bool) -> str:
         host = os.getenv("OLLAMA_HOST", self._defaults["ollama"]["host"])
-        num_predict = max_length * 2 if detailed else max_length
+        num_predict = max_length * 2
         response = requests.post(
             f"{host}/api/chat",
             json={

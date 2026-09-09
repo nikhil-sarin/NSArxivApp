@@ -461,6 +461,16 @@ def render_report(paper: dict, body_html: str, figures: list[dict], abstract: st
 
     body = _FIGURE_MARKER_RE.sub(_embed, body)
     body = _auto_insert_figures(body, figures)
+    pdf_url = str(paper.get("pdf_url") or f"https://arxiv.org/pdf/{paper.get('arxiv_id', '')}")
+    body = re.sub(
+        r"<q>(.*?)</q>",
+        lambda match: (
+            f'<a href="{escape(pdf_url, quote=True)}" target="_blank" rel="noopener" '
+            f'title="Open source paper"><q>{match.group(1)}</q></a>'
+        ),
+        body,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
     intro = _render_intro(paper, abstract)
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -550,7 +560,8 @@ def generate_report(
     tmp.write_text(html, encoding="utf-8")
     tmp.rename(out_path)
     if vector_db is not None:
-        from app.corpus_index import index_report
+        from app.corpus_index import index_figures, index_report
 
         index_report(paper, out_path, vector_db=vector_db)
+        index_figures(paper, figures, vector_db=vector_db)
     return out_path

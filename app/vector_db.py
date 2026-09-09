@@ -1,10 +1,28 @@
 """Vector database for paper embeddings and semantic search."""
 
 import os
+import hashlib
+import re
 from pathlib import Path
 import chromadb
+import numpy as np
 from typing import List, Dict, Optional
 from sentence_transformers import SentenceTransformer
+
+
+class _HashingEmbedder:
+    """Offline fallback that keeps retrieval available without model downloads."""
+
+    dimension = 384
+
+    def encode(self, text: str):
+        vector = np.zeros(self.dimension, dtype=float)
+        for token in re.findall(r"[a-z0-9-]+", text.lower()):
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:4], "big") % self.dimension
+            vector[index] += 1.0 if digest[4] & 1 else -1.0
+        norm = np.linalg.norm(vector)
+        return vector / norm if norm else vector
 
 
 class PaperVectorDB:
@@ -21,14 +39,28 @@ class PaperVectorDB:
         self.db_path.mkdir(parents=True, exist_ok=True)
 
         # Initialize ChromaDB client
-        self.client = chromadb.PersistentClient(path=str(self.db_path))
+        self.legacy_db_error = ""
+        try:
+            self.client = chromadb.PersistentClient(path=str(self.db_path))
+        except BaseException as exc:
+            # pyo3 PanicException inherits BaseException. Never mutate or delete
+            # the legacy index; switch to a clean versioned store and rebuild.
+            self.legacy_db_error = str(exc)
+            self.db_path = self.db_path.parent / f"{self.db_path.name}_v2"
+            print(f"[vector_db] legacy store is incompatible ({exc}); using {self.db_path}")
+            self.db_path.mkdir(parents=True, exist_ok=True)
+            self.client = chromadb.PersistentClient(path=str(self.db_path))
 
         # Create collection for papers
         self.collection = self.client.get_or_create_collection(
             name="papers",
             metadata={"hnsw:space": "cosine"},
         )
-        self.document_collection = self.client.get_or_create_collection(
+        # Keep new chunk embeddings out of legacy Chroma databases. Chroma 1.x
+        # can read old collections but may panic while altering their schema.
+        self.document_db_path = self.db_path.parent / f"{self.db_path.name}_documents"
+        self.document_client = chromadb.PersistentClient(path=str(self.document_db_path))
+        self.document_collection = self.document_client.get_or_create_collection(
             name="research_documents",
             metadata={"hnsw:space": "cosine"},
         )
@@ -36,7 +68,13 @@ class PaperVectorDB:
         # Initialize sentence transformer for embeddings
         embedding_model = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
         embedding_device = os.getenv("EMBEDDING_DEVICE", "cpu")
-        self.embedder = SentenceTransformer(embedding_model, device=embedding_device)
+        try:
+            self.embedder = SentenceTransformer(embedding_model, device=embedding_device)
+            self.embedding_backend = embedding_model
+        except Exception as exc:
+            print(f"[vector_db] embedding model unavailable ({exc}); using offline hashing fallback")
+            self.embedder = _HashingEmbedder()
+            self.embedding_backend = "hashing-fallback-v1"
 
     def add_paper(
         self,
@@ -252,7 +290,7 @@ class PaperVectorDB:
     def paper_exists(self, paper_id: str) -> bool:
         """Check if a paper exists in the database."""
         try:
-            self.collection.get(ids=[paper_id])
-            return True
-        except:
+            result = self.collection.get(ids=[paper_id])
+            return bool(result.get("ids"))
+        except Exception:
             return False

@@ -1,6 +1,21 @@
 """Helpers for robust paper summary generation."""
 
+import re
+
 from app.summarizer import PaperSummarizer
+
+
+def completeness_issues(summary: str) -> list[str]:
+    """Detect summaries that are empty, implausibly short, or cut off mid-output."""
+    text = (summary or "").strip()
+    if not text:
+        return ["missing"]
+    issues = []
+    if len(re.findall(r"\b\w+\b", text)) < 60:
+        issues.append("too short")
+    if text.endswith(("...", "…", ":", ";", ",")) or not re.search(r"[.!?\])}]$", text):
+        issues.append("appears truncated")
+    return issues
 
 
 def summarize_with_fallback(

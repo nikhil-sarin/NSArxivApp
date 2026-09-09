@@ -12,7 +12,7 @@ from typing import Iterator, Optional
 
 
 DB_PATH = Path("data/research.db")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 def _now() -> str:
@@ -157,6 +157,15 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             model TEXT NOT NULL,
             metrics_json TEXT NOT NULL,
             created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ideas (
+            idea_type TEXT NOT NULL,
+            idea_id TEXT NOT NULL,
+            data_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(idea_type, idea_id)
         );
         """
     )
@@ -320,6 +329,11 @@ def health_snapshot() -> dict:
             "documents": db.execute("SELECT COUNT(*) FROM documents").fetchone()[0],
             "fts_documents": db.execute("SELECT COUNT(*) FROM document_fts").fetchone()[0],
             "failed_jobs": db.execute("SELECT COUNT(*) FROM jobs WHERE status='failed'").fetchone()[0],
+            "pending_jobs": db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')"
+            ).fetchone()[0],
+            "projects": db.execute("SELECT COUNT(*) FROM projects").fetchone()[0],
+            "evaluations": db.execute("SELECT COUNT(*) FROM evaluation_runs").fetchone()[0],
         }
     finally:
         db.close()

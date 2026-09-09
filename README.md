@@ -9,7 +9,11 @@ A full-stack application to discover, summarize, and explore connections between
 - **Auto-summarization**: Extract and summarize paper content using a configurable LLM
 - **Detailed guided reports**: Generate ArXivSelaa-style reading reports for any saved paper with your configured LLM
 - **Chat with papers**: Ask questions about any paper in your library — the LLM reads the PDF and answers in context
-- **Vector search**: Semantic search powered by sentence transformers
+- **Unified evidence search**: Hybrid keyword/vector retrieval across pages, sections, figures, summaries, reports, notes, projects, and meetings
+- **Evidence-backed synthesis**: Literature reviews with source-linked evidence matrices and BibTeX export
+- **Project intelligence**: Link papers, inspect Git/Notion-export changes, record meetings, and generate private weekly briefings
+- **Research operations**: Emerging-theme detection, durable background indexing jobs, index repair, and persisted model evaluations
+- **Handwritten notes**: Local vision-model transcription directly into citation-aware paper notes
 - **Knowledge graph**: Visualize connections between papers by category and authors
 - **Persistent library**: Papers, summaries, and metadata are saved locally and reload automatically on restart
 - **Scheduled fetch**: Run automated daily searches or ArXivSelaa-style new-submission fetches via cron or macOS launchd
@@ -89,6 +93,14 @@ PRIVATE_LLM_PROVIDER=ollama
 ```
 
 The sidebar shows the effective route for paper-only and private-context workflows.
+The same policy can be changed in **System health** unless `DATA_ROUTING_POLICY` is explicitly set in the environment; an environment value remains authoritative for deployment.
+
+Handwritten-note OCR always uses the local Ollama endpoint:
+
+```env
+OCR_MODEL=gemma3:latest
+OLLAMA_HOST=http://localhost:11434
+```
 
 ### Option 1: Ollama (local, default)
 
@@ -236,10 +248,12 @@ Use the **Schedule** tab in the app UI to generate and install a launchd plist a
 1. **Search**: Enter keywords and/or select categories in the sidebar, optionally filter by date, then click **Search**
 2. **Library**: All saved papers appear in the Library tab — filter by category, regenerate summaries, generate detailed reports, or chat with individual papers
 3. **Chat with a paper**: Click **Chat with paper** inside any library entry to ask questions — the LLM reads the PDF and answers in context
-4. **Semantic search**: Describe what you're looking for in plain language in the Semantic Search tab
+4. **Unified search**: Search page-level paper text, reports, figures, notes, projects, and meeting records from one evidence view
 5. **Detailed report**: Click **Generate detailed report** on any saved paper to create a cached HTML guided-reading report
 6. **Knowledge graph**: Visualize category and author connections in the Knowledge Graph tab
 7. **Schedule**: Set up automated daily fetching in the Schedule tab
+8. **Projects**: Attach repositories, a Notion Markdown export, meetings, and paper evidence; imported TheLocalWhisperer actions remain proposals until explicitly approved
+9. **Research Ops**: Run background full-text indexing, inspect durable job state, compare model routes, and track emerging themes over time
 
 ---
 
@@ -249,14 +263,34 @@ All data is stored locally under `data/` in the app directory:
 
 ```
 data/
-├── research.db      # transactional papers, triage state, search index, and job state
+├── research.db      # papers, ideas, profile, projects, triage, actions, evaluations, jobs, and FTS index
 ├── papers.json      # legacy source retained unchanged after first-run migration
+├── ideas.json       # legacy source retained unchanged after first-run migration
+├── profile.json     # legacy source retained unchanged after first-run migration
 ├── papers/          # downloaded PDFs
 ├── reports/         # cached detailed HTML reports
 ├── sources/         # cached ArXiv source downloads for reports
 ├── vector_db/       # ChromaDB embeddings
 └── fetch.log        # scheduled job logs
 ```
+
+SQLite runs in WAL mode and migrations are non-destructive: legacy JSON files are read once when the corresponding tables are empty and are never rewritten. Back up `data/research.db`, `data/vector_db/`, and the legacy JSON files before moving an installation.
+
+### TheLocalWhisperer handoff contract
+
+Upload a JSON list in a project's **Actions** view. Only these action types are accepted: `task.create`, `calendar.create`, `notion.update`, and `agent.invoke`.
+
+```json
+[
+  {
+    "action_type": "task.create",
+    "title": "Read the new opacity paper",
+    "payload": {"paper_id": "2609.12345"}
+  }
+]
+```
+
+Imports always enter `proposed` state. The app does not execute an action, and an action cannot be marked `executed` until it has first been explicitly approved.
 
 ---
 

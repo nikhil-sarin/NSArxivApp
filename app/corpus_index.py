@@ -128,3 +128,87 @@ def index_report(paper: dict, report_path: Path, *, vector_db) -> int:
     parser.feed(report_path.read_text(encoding="utf-8", errors="replace"))
     records = split_text("\n\n".join(parser.parts), source="generated_report")
     return _write_records(paper, records, owner_type="report", kind="report", vector_db=vector_db)
+
+
+def index_text_record(
+    *,
+    owner_type: str,
+    owner_id: str,
+    kind: str,
+    title: str,
+    text: str,
+    vector_db,
+    paper_id: str | None = None,
+    locator: dict | None = None,
+) -> int:
+    """Index arbitrary attributable research text such as meetings or OCR notes."""
+    records = split_text(text, source=kind)
+    research_db.delete_documents(owner_type, owner_id)
+    vector_db.delete_documents(owner_type, owner_id)
+    for index, record in enumerate(records, start=1):
+        document_id = f"{owner_type}:{owner_id}:{index}"
+        record_locator = {**(locator or {}), **record.get("locator", {})}
+        research_db.upsert_document(
+            document_id,
+            kind=kind,
+            owner_type=owner_type,
+            owner_id=owner_id,
+            paper_id=paper_id,
+            title=title,
+            text=record["text"],
+            locator=record_locator,
+        )
+        vector_db.upsert_document(
+            document_id,
+            record["text"],
+            {
+                "kind": kind,
+                "owner_key": f"{owner_type}:{owner_id}",
+                "paper_id": paper_id or "",
+                "title": title,
+                "locator_json": json.dumps(record_locator),
+            },
+        )
+    return len(records)
+
+
+def index_figures(paper: dict, figures: list[dict], *, vector_db) -> int:
+    """Index extracted figure captions with stable figure locators."""
+    paper_id = str(paper.get("arxiv_id", ""))
+    research_db.delete_documents("figure", paper_id)
+    vector_db.delete_documents("figure", paper_id)
+    count = 0
+    for index, figure in enumerate(figures, start=1):
+        caption = str(figure.get("caption", "")).strip()
+        if not caption:
+            continue
+        locator = {
+            "arxiv_id": paper_id,
+            "figure": figure.get("number", index),
+            "path": str(figure.get("path", "")),
+            "source": "paper_figure",
+        }
+        document_id = f"figure:{paper_id}:{index}"
+        research_db.upsert_document(
+            document_id,
+            kind="figure",
+            owner_type="figure",
+            owner_id=paper_id,
+            paper_id=paper_id,
+            title=str(paper.get("title", paper_id)),
+            text=caption,
+            locator=locator,
+        )
+        vector_db.upsert_document(
+            document_id,
+            caption,
+            {
+                "kind": "figure",
+                "owner_key": f"figure:{paper_id}",
+                "paper_id": paper_id,
+                "title": str(paper.get("title", paper_id)),
+                "locator_json": json.dumps(locator),
+            },
+        )
+        count += 1
+    return count

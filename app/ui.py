@@ -28,7 +28,7 @@ from app.knowledge_graph import KnowledgeGraph
 from app import paper_store
 from app.paper_text import get_paper_text
 from app.report_generator import ReportUnavailable, generate_report
-from app.summary_workflow import summarize_with_fallback
+from app.summary_workflow import completeness_issues, summarize_with_fallback
 from app.tex_extractor import fetch_html_text
 from app import researcher_profile
 from app import idea_store
@@ -39,6 +39,11 @@ from app import corpus_index
 from app import retrieval
 from app import project_store
 from app import action_contract
+from app import evaluation
+from app import handwritten_notes
+from app import index_jobs
+from app import synthesis
+from app import trends
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -245,6 +250,15 @@ def render_sidebar():
         st.caption(f"Database schema: v{health['schema_version']}")
         st.caption(f"Papers: {health['papers']} | vector records: {vector_count}")
         st.caption(f"Search documents: {health['documents']} | inbox: {health['inbox']}")
+        selected_policy = st.selectbox(
+            "Data routing",
+            ["local_only", "paper_cloud", "allow_cloud"],
+            index=["local_only", "paper_cloud", "allow_cloud"].index(privacy.active_policy()),
+            help="Local only keeps all model calls local; paper cloud permits public paper text in cloud models; allow cloud includes private notes and projects.",
+        )
+        if selected_policy != privacy.active_policy() and st.button("Apply routing policy", use_container_width=True):
+            privacy.set_policy(selected_policy)
+            st.rerun()
         if vector_count != health["papers"]:
             st.warning(f"Vector index count differs from the library by {abs(health['papers'] - vector_count)} records.")
         if health["documents"] != health["fts_documents"]:
@@ -384,6 +398,44 @@ def render_paper_notes(pid: str):
             )
             st.session_state.papers = paper_store.load_all_papers()
             st.success("Notes saved.")
+
+    with st.expander("Import handwritten note", expanded=False):
+        upload = st.file_uploader(
+            "Note image",
+            type=["png", "jpg", "jpeg", "webp"],
+            key=f"handwritten_upload_{pid}",
+        )
+        destination = st.selectbox(
+            "Save transcription to",
+            list(paper_store.DEFAULT_NOTES),
+            format_func=lambda value: value.replace("_", " ").title(),
+            key=f"handwritten_destination_{pid}",
+        )
+        if upload and st.button("Transcribe locally", key=f"handwritten_transcribe_{pid}"):
+            paper = paper_store.get_paper(pid) or {}
+            with st.spinner("Transcribing with the local vision model..."):
+                try:
+                    transcription = handwritten_notes.transcribe_image(
+                        upload.getvalue(), context=f"{paper.get('title', '')}\n{paper.get('abstract', '')}"
+                    )
+                except Exception as exc:
+                    st.error(f"Transcription failed: {exc}")
+                else:
+                    current = paper_store.get_notes(pid)
+                    current[destination] = "\n\n".join(filter(None, [current[destination], transcription]))
+                    paper_store.save_notes(pid, current)
+                    corpus_index.index_text_record(
+                        owner_type="handwritten_note",
+                        owner_id=pid,
+                        kind="handwritten_note",
+                        title=paper.get("title", pid),
+                        text=transcription,
+                        paper_id=pid,
+                        locator={"arxiv_id": pid, "filename": upload.name},
+                        vector_db=st.session_state.vdb,
+                    )
+                    st.success("Transcription saved and indexed.")
+                    st.rerun()
 
 
 def render_paper_card(paper: Dict, show_actions: bool = True):
@@ -771,22 +823,27 @@ def render_multi_paper_chat():
 
 
 def render_vector_search():
-    st.header("Semantic Search")
+    st.header("Unified Research Search")
     semantic_query = st.text_input(
         "Describe what you're looking for...",
         placeholder="e.g., papers about gravitational wave detection methods",
     )
     if semantic_query:
         with st.spinner("Searching..."):
-            results = st.session_state.vdb.search(semantic_query, top_k=10)
+            results = retrieval.hybrid_search(semantic_query, vector_db=st.session_state.vdb, limit=15)
         if results:
-            st.markdown(f"### Found {len(results)} relevant papers")
+            st.markdown(f"### Found {len(results)} attributable sources")
             for result in results:
-                metadata = result["metadata"]
-                metadata["summary"] = result["summary"]
-                render_paper_card(metadata, show_actions=False)
+                label = retrieval.citation_label(result)
+                title = result.get("title") or result.get("kind", "Source").replace("_", " ").title()
+                with st.expander(f"{title} - {label}"):
+                    st.caption(result.get("kind", "source").replace("_", " ").title())
+                    st.write(result.get("text", ""))
+                    url = retrieval.source_url(result)
+                    if url:
+                        st.link_button("Open source", url)
         else:
-            st.info("No papers in the database yet. Use the ArXiv search to add papers.")
+            st.info("No indexed sources matched. Index full papers from Research Ops if needed.")
 
     st.markdown("---")
     render_multi_paper_chat()
@@ -1117,6 +1174,8 @@ def _chat_with_paper(pid: str, paper: Dict, user_message: str) -> str:
         )
     except Exception as e:
         reply = f"Error: {e}"
+    if evidence:
+        reply = retrieval.linkify_citations(reply, evidence)
 
     history.append({"role": "user", "content": user_message})
     history.append({"role": "assistant", "content": reply})
@@ -1222,7 +1281,7 @@ def render_papers_list():
         col4.metric("Newest paper", "N/A")
 
     # Bulk summary buttons
-    btn_col1, btn_col2, btn_col3, mode_col = st.columns([1, 1, 1, 2])
+    btn_col1, btn_col2, btn_col3, btn_col4, mode_col = st.columns([1, 1, 1, 1, 2])
     detailed_all = mode_col.checkbox("Detailed mode", key="regen_detailed_all")
     if btn_col1.button("Regenerate all"):
         progress = st.progress(0, text="Regenerating summaries...")
@@ -1249,6 +1308,16 @@ def render_papers_list():
             st.rerun()
     if btn_col3.button("Refresh"):
         st.session_state.papers = paper_store.load_all_papers()
+        st.rerun()
+    if btn_col4.button("Repair incomplete"):
+        incomplete = [p for p in paper_store.load_all_papers() if completeness_issues(p.get("summary", ""))]
+        progress = st.progress(0, text="Repairing incomplete summaries...")
+        for i, paper in enumerate(incomplete, start=1):
+            progress.progress(i / max(len(incomplete), 1), text=f"Repairing {i}/{len(incomplete)}")
+            _regenerate_summary(paper, detailed=True)
+        progress.empty()
+        st.session_state.papers = paper_store.load_all_papers()
+        st.success(f"Rebuilt {len(incomplete)} summaries from full text.")
         st.rerun()
 
     st.markdown("---")
@@ -1316,6 +1385,9 @@ def render_papers_list():
                 st.caption(f"Published: {paper.get('published', 'N/A')}")
                 st.markdown("**Summary**")
                 st.write(displayed_summary)
+                issues = completeness_issues(displayed_summary)
+                if issues:
+                    st.warning("Summary quality check: " + ", ".join(issues) + ". Regenerate in Detailed mode.")
                 notes_text = _format_notes_for_display(paper)
                 if notes_text:
                     st.markdown("**Saved research notes**")
@@ -1631,32 +1703,6 @@ def render_schedule():
                 st.caption("You can install manually: launchctl load " + str(plist_path))
 
 
-def _build_library_context() -> str:
-    """Build a compact context string from all stored papers for the assistant."""
-    papers = paper_store.load_all_papers()
-    if not papers:
-        return ""
-    lines = [f"The user has a library of {len(papers)} research papers:\n"]
-    for p in papers:
-        pid = p.get("arxiv_id", "")
-        title = p.get("title", "Unknown")
-        authors = _authors_str(p)
-        published = str(p.get("published", ""))[:10]
-        cats = ", ".join(p.get("categories", [])) if isinstance(p.get("categories"), list) else str(p.get("categories", ""))
-        summary = p.get("summary", "").strip()
-        notes = "\n".join(_notes_lines(p))
-        lines.append(
-            f"---\n"
-            f"ID: {pid}\n"
-            f"Title: {title}\n"
-            f"Authors: {authors}\n"
-            f"Published: {published}  Categories: {cats}\n"
-            f"Summary: {summary}\n"
-            + (f"Research notes:\n{notes}\n" if notes else "")
-        )
-    return "\n".join(lines)
-
-
 def _build_selected_papers_context(papers: List[Dict], include_notes: bool = True) -> str:
     """Build context from an explicit set of papers for lit reviews and project workspaces."""
     lines = [f"Selected paper set ({len(papers)} papers):\n"]
@@ -1686,6 +1732,17 @@ def _assistant_call(system: str, messages: list, *, contains_private_data: bool 
         )
     except Exception as e:
         return f"Error: {e}"
+
+
+def _retrieved_library_context(query: str, *, paper_ids: list[str] | None = None, limit: int = 16) -> tuple[str, list[dict]]:
+    """Retrieve bounded, attributable context rather than serializing the full library."""
+    evidence = retrieval.hybrid_search(
+        query or "main contribution methods results limitations",
+        vector_db=st.session_state.vdb,
+        paper_ids=paper_ids,
+        limit=limit,
+    )
+    return retrieval.context_block(evidence), evidence
 
 
 def render_lit_review_builder():
@@ -1726,14 +1783,41 @@ def render_lit_review_builder():
     )
     include_notes = st.checkbox("Use my citation-aware notes", value=True, key="lit_review_include_notes")
 
+    evidence_query = focus.strip() or "main claims methods results limitations"
+    selected_ids = [paper.get("arxiv_id", "") for paper in selected]
+    matrix = synthesis.claim_matrix(
+        evidence_query,
+        vector_db=st.session_state.vdb,
+        paper_ids=selected_ids,
+        limit=24,
+    )
+    if matrix:
+        st.markdown("**Evidence matrix**")
+        st.dataframe(pd.DataFrame(matrix), use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download claim matrix CSV",
+            pd.DataFrame(matrix).to_csv(index=False),
+            file_name="claim_matrix.csv",
+            mime="text/csv",
+        )
+    st.download_button(
+        "Download BibTeX",
+        synthesis.bibtex(selected),
+        file_name="selected_papers.bib",
+        mime="application/x-bibtex",
+    )
+
     if st.button("Generate literature review", type="primary", key="generate_lit_review"):
         profile_ctx = researcher_profile.to_context_string(researcher_profile.load())
-        paper_ctx = _build_selected_papers_context(selected, include_notes=include_notes)
+        paper_ctx, evidence = _retrieved_library_context(evidence_query, paper_ids=selected_ids, limit=24)
+        if include_notes:
+            paper_ctx += "\n\n" + _build_selected_papers_context(selected, include_notes=True)
         focus_clause = f"Focus specifically on: {focus.strip()}." if focus.strip() else "Use the strongest common themes in the selected papers."
         system = (
             "You are a research assistant helping write accurate, useful literature reviews for an active researcher. "
             "Use the selected papers and the user's notes as the source of truth. Be specific about paper titles and authors. "
-            "Do not invent claims that are not supported by the supplied summaries or notes.\n\n"
+            "Every factual claim must cite one of the exact bracketed source labels supplied below. "
+            "Do not invent claims or citations.\n\n"
             + (profile_ctx + "\n\n" if profile_ctx else "")
             + paper_ctx
         )
@@ -1756,6 +1840,7 @@ def render_lit_review_builder():
         )
         with st.spinner("Generating literature review..."):
             review = _assistant_call(system, [{"role": "user", "content": prompt}])
+        review = retrieval.linkify_citations(review, evidence)
         st.session_state["last_lit_review"] = review
         st.session_state["last_lit_review_title"] = focus.strip() or review_type
 
@@ -1794,21 +1879,9 @@ def render_assistant():
         key="assistant_mode",
     )
 
-    # Build library context (cached, invalidated when paper count changes)
-    ctx_key = "assistant_library_context"
-    ctx_n_key = "assistant_library_n"
-    if st.session_state.get(ctx_n_key) != n:
-        with st.spinner("Indexing library..."):
-            st.session_state[ctx_key] = _build_library_context()
-            st.session_state[ctx_n_key] = n
-
-    library_context = st.session_state[ctx_key]
-
-    # Prepend researcher profile to all assistant prompts
     profile = researcher_profile.load()
     profile_context = researcher_profile.to_context_string(profile)
-    if profile_context:
-        library_context = profile_context + "\n\n" + library_context
+    library_context = ""
 
     # ------------------------------------------------------------------ #
     if mode == "Cross-library chat":
@@ -1828,11 +1901,19 @@ def render_assistant():
 
         user_input = st.chat_input("Ask about your library...", key="assistant_chat_input")
         if user_input:
+            library_context, evidence = _retrieved_library_context(user_input, limit=18)
+            system = (
+                "Answer only from the retrieved research evidence. Cite factual statements using the exact "
+                "bracketed labels. If evidence is insufficient, say so.\n\n"
+                + (profile_context + "\n\n" if profile_context else "")
+                + library_context
+            )
             with st.chat_message("user"):
                 st.write(user_input)
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
                     reply = _assistant_call(system, history + [{"role": "user", "content": user_input}])
+                    reply = retrieval.linkify_citations(reply, evidence)
                 st.write(reply)
             history.append({"role": "user", "content": user_input})
             history.append({"role": "assistant", "content": reply})
@@ -1856,6 +1937,9 @@ def render_assistant():
 
         if st.button("Generate briefing", type="primary", key="gen_briefing"):
             focus_clause = f" Focus particularly on: {custom_focus}." if custom_focus.strip() else ""
+            library_context, _ = _retrieved_library_context(
+                custom_focus or "key themes recent developments methods connections", limit=24
+            )
             system = (
                 "You are a research assistant helping a scientist understand their paper library.\n\n"
                 + library_context
@@ -1924,6 +2008,7 @@ def render_assistant():
                     "What problems are clearly important, currently unsolved, and tractable?"
                 ),
             }
+            library_context, _ = _retrieved_library_context(angle, limit=24)
             system = (
                 "You are a senior research advisor helping a scientist identify gaps and opportunities "
                 "in their field based on their paper library.\n\n"
@@ -2001,7 +2086,7 @@ def render_assistant():
                     "You are a senior research advisor helping an astrophysics researcher identify "
                     "novel, tractable project ideas. You have access to their paper library and "
                     "knowledge of the latest work in the field.\n\n"
-                    + library_context
+                    + _retrieved_library_context(topic, limit=18)[0]
                     + fresh_context
                 )
 
@@ -2076,7 +2161,9 @@ def render_profile():
         if not papers:
             st.warning("Add some papers to your library first.")
         else:
-            library_ctx = _build_library_context()
+            library_ctx, _ = _retrieved_library_context(
+                "research areas methods tools recurring topics professional profile", limit=40
+            )
             system = "You are helping a researcher build their professional profile based on their paper library."
             prompt = (
                 "Based on this researcher's paper library, infer a professional profile. "
@@ -2192,7 +2279,9 @@ def _idea_workspace(idea_type: str, idea: Dict):
         with st.expander("Linked paper context", expanded=False):
             st.dataframe(pd.DataFrame(linked_rows), use_container_width=True, hide_index=True)
 
-    library_ctx = _build_library_context()
+    library_ctx, _ = _retrieved_library_context(
+        f"{idea.get('title', '')} {idea.get('description', '')}", limit=24
+    )
     linked_ctx = _build_selected_papers_context(linked_papers, include_notes=True) if linked_papers else ""
     base_context = (
         (profile_ctx + "\n\n" if profile_ctx else "")
@@ -2421,8 +2510,7 @@ def _render_ideas_tab(idea_type: str):
 
     profile = researcher_profile.load()
     profile_ctx = researcher_profile.to_context_string(profile)
-    library_ctx = _build_library_context()
-    base_context = (profile_ctx + "\n\n" if profile_ctx else "") + library_ctx
+    base_context = profile_ctx
 
     # ---- Generate new idea ----
     with st.expander("Generate new idea", expanded=not idea_store.load_ideas(idea_type)):
@@ -2446,6 +2534,8 @@ def _render_ideas_tab(idea_type: str):
             if not topic.strip():
                 st.warning("Please enter a topic.")
             else:
+                library_ctx, _ = _retrieved_library_context(topic, limit=24)
+                base_context = (profile_ctx + "\n\n" if profile_ctx else "") + library_ctx
                 fresh_ctx = ""
                 if fetch_fresh:
                     with st.spinner("Fetching latest ArXiv papers..."):
@@ -2686,6 +2776,21 @@ def render_projects():
         for snapshot in snapshots:
             with st.expander(f"{snapshot['created_at'][:16]} - {snapshot['source']}"):
                 st.code(snapshot["content"][:12000])
+        with st.form(f"meeting_note_{project_id}", clear_on_submit=True):
+            meeting_title = st.text_input("Meeting title")
+            meeting_text = st.text_area("Meeting notes", height=140)
+            if st.form_submit_button("Save and index meeting") and meeting_text.strip():
+                meeting_id = f"{project_id}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+                corpus_index.index_text_record(
+                    owner_type="meeting",
+                    owner_id=meeting_id,
+                    kind="meeting",
+                    title=meeting_title or f"Meeting for {project.get('title', project_id)}",
+                    text=meeting_text,
+                    locator={"project_id": project_id, "created_at": datetime.now(timezone.utc).isoformat()},
+                    vector_db=st.session_state.vdb,
+                )
+                st.success("Meeting notes saved and indexed.")
 
     with papers_tab:
         all_papers = paper_store.load_all_papers()
@@ -2746,6 +2851,23 @@ def render_projects():
 
     with actions_tab:
         st.caption("Actions are proposals only. Approval never executes an external tool automatically.")
+        handoff = st.file_uploader(
+            "Import TheLocalWhisperer action handoff (JSON)",
+            type=["json"],
+            key=f"action_handoff_{project_id}",
+        )
+        if handoff and st.button("Validate and import proposals", key=f"import_actions_{project_id}"):
+            try:
+                imported = action_contract.import_proposals(
+                    "TheLocalWhisperer",
+                    json.loads(handoff.getvalue()),
+                    project_id=project_id,
+                )
+            except (ValueError, json.JSONDecodeError) as exc:
+                st.error(f"Invalid handoff: {exc}")
+            else:
+                st.success(f"Imported {len(imported)} proposals. Review and approve each one below.")
+                st.rerun()
         with st.form(f"propose_action_{project_id}"):
             action_title = st.text_input("Proposed action")
             action_type = st.selectbox("Type", ["task.create", "calendar.create", "notion.update", "agent.invoke"])
@@ -2773,6 +2895,79 @@ def render_projects():
                     st.rerun()
 
 
+def render_research_ops():
+    """Render corpus trends, background indexing, and measured model routes."""
+    st.header("Research Ops")
+    trends_tab, indexing_tab, eval_tab = st.tabs(["Emerging themes", "Indexing", "Model evaluation"])
+
+    with trends_tab:
+        window = st.slider("Recent window (days)", 30, 365, 90, 30)
+        rows = trends.emerging_themes(paper_store.load_all_papers(), recent_days=window)
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("Not enough papers occur in both comparison windows yet.")
+
+    with indexing_tab:
+        health = research_db.health_snapshot()
+        cols = st.columns(4)
+        cols[0].metric("Papers", health["papers"])
+        cols[1].metric("Documents", health["documents"])
+        cols[2].metric("Queued/running", health["pending_jobs"])
+        cols[3].metric("Failed", health["failed_jobs"])
+        start_col, repair_col = st.columns(2)
+        if start_col.button("Index missing full text", type="primary", use_container_width=True):
+            job_id = index_jobs.enqueue_library_index(
+                arxiv_client=st.session_state.arxiv,
+                pdf_extractor=st.session_state.pdf_extractor,
+                vector_db=st.session_state.vdb,
+            )
+            st.success(f"Queued indexing job {job_id[:8]}.")
+        if repair_col.button("Repair interrupted jobs", use_container_width=True):
+            repaired = index_jobs.repair_stale_jobs()
+            st.success(f"Marked {repaired} interrupted jobs for rerun.")
+        jobs = index_jobs.list_jobs()
+        if jobs:
+            st.dataframe(pd.DataFrame([{
+                "job": job["job_id"][:8], "status": job["status"],
+                "papers": job.get("result", {}).get("papers_examined", ""),
+                "chunks": job.get("result", {}).get("chunks_written", ""),
+                "error": job.get("error", ""), "updated": job["updated_at"][:19],
+            } for job in jobs]), use_container_width=True, hide_index=True)
+
+    with eval_tab:
+        provider = st.selectbox("Provider", ["ollama", "gemini", "anthropic", "openai"], key="eval_provider")
+        model = st.text_input("Model", value=st.session_state.summarizer._active_model(), key="eval_model")
+        if st.button("Run baseline suite", type="primary", key="run_eval"):
+            evaluator = PaperSummarizer(provider=provider, model=model.strip() or None)
+            with st.spinner("Running three evaluation prompts..."):
+                try:
+                    result = evaluation.run_suite(
+                        suite="research-baseline-v1",
+                        provider=provider,
+                        model=model,
+                        complete=lambda question: evaluator.complete(
+                            "Answer concisely. Include the key noun from the question in the answer.", question
+                        ),
+                    )
+                except Exception as exc:
+                    st.error(f"Evaluation failed: {exc}")
+                else:
+                    st.success(f"Completed run {result['run_id'][:8]}.")
+        runs = evaluation.list_runs()
+        route = evaluation.recommend_route(runs, contains_private_data=False)
+        if route:
+            st.caption(f"Best measured public route: {route['provider']} / {route['model']}")
+        if runs:
+            st.dataframe(pd.DataFrame([{
+                "provider": run["provider"], "model": run["model"],
+                "coverage": round(run["metrics"].get("task_coverage", 0), 2),
+                "citation precision": round(run["metrics"].get("citation_precision", 0), 2),
+                "latency (s)": round(run["metrics"].get("mean_latency_seconds", 0), 2),
+                "created": run["created_at"][:19],
+            } for run in runs]), use_container_width=True, hide_index=True)
+
+
 def main():
     init_session_state()
     _auto_sync_papers_from_store()
@@ -2783,10 +2978,10 @@ def main():
     if query is not None:  # None means Search button was not pressed
         render_search_results(query, author, categories, max_results, date_from)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
         "Inbox", "Semantic Search", "Knowledge Graph", "Library",
         "Assistant", "Lit Review", "Projects", "Paper Ideas", "Grant Ideas",
-        "Schedule", "Profile",
+        "Research Ops", "Schedule", "Profile",
     ])
 
     with tab1:
@@ -2808,8 +3003,10 @@ def main():
     with tab9:
         render_grant_ideas()
     with tab10:
-        render_schedule()
+        render_research_ops()
     with tab11:
+        render_schedule()
+    with tab12:
         render_profile()
 
 

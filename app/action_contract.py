@@ -11,9 +11,14 @@ from app import research_db
 
 
 VALID_STATUSES = {"proposed", "approved", "rejected", "executed", "failed"}
+VALID_ACTION_TYPES = {"task.create", "calendar.create", "notion.update", "agent.invoke"}
 
 
 def propose(source: str, action_type: str, title: str, payload: dict, project_id: Optional[str] = None) -> str:
+    if action_type not in VALID_ACTION_TYPES:
+        raise ValueError(f"Unsupported action type: {action_type}")
+    if not source.strip() or not title.strip() or not isinstance(payload, dict):
+        raise ValueError("source, title, and an object payload are required")
     action_id = str(uuid.uuid4())
     timestamp = datetime.now(timezone.utc).isoformat()
     with research_db.transaction() as db:
@@ -22,6 +27,24 @@ def propose(source: str, action_type: str, title: str, payload: dict, project_id
             (action_id, source, project_id, action_type, title, json.dumps(payload, default=str), timestamp, timestamp),
         )
     return action_id
+
+
+def import_proposals(source: str, items: list[dict], project_id: Optional[str] = None) -> list[str]:
+    """Validate an external agent's JSON handoff and import proposals without executing them."""
+    if not isinstance(items, list):
+        raise ValueError("action handoff must be a JSON list")
+    action_ids = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("each action proposal must be an object")
+        action_ids.append(propose(
+            source,
+            str(item.get("action_type", "")),
+            str(item.get("title", "")),
+            item.get("payload", {}),
+            project_id=item.get("project_id") or project_id,
+        ))
+    return action_ids
 
 
 def update_status(action_id: str, status: str) -> None:

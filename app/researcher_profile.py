@@ -1,8 +1,10 @@
-"""Persistent researcher profile stored at data/profile.json."""
+"""Transactional researcher profile with legacy JSON import."""
 
 import json
 from pathlib import Path
 from typing import Dict
+
+from app import research_db
 
 PROFILE_PATH = Path("data/profile.json")
 
@@ -17,17 +19,30 @@ DEFAULT_PROFILE = {
 
 
 def load() -> Dict:
-    if not PROFILE_PATH.exists():
-        return dict(DEFAULT_PROFILE)
+    db = research_db.connect()
     try:
-        return {**DEFAULT_PROFILE, **json.loads(PROFILE_PATH.read_text())}
-    except Exception:
-        return dict(DEFAULT_PROFILE)
+        row = db.execute("SELECT value_json FROM settings WHERE key='researcher_profile'").fetchone()
+    finally:
+        db.close()
+    if row:
+        return {**DEFAULT_PROFILE, **json.loads(row[0])}
+    if PROFILE_PATH.exists():
+        try:
+            profile = {**DEFAULT_PROFILE, **json.loads(PROFILE_PATH.read_text())}
+            save(profile)
+            return profile
+        except (OSError, json.JSONDecodeError):
+            pass
+    return dict(DEFAULT_PROFILE)
 
 
 def save(profile: Dict):
-    PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PROFILE_PATH.write_text(json.dumps(profile, indent=2))
+    with research_db.transaction() as db:
+        db.execute(
+            "INSERT INTO settings(key, value_json, updated_at) VALUES('researcher_profile', ?, datetime('now')) "
+            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+            (json.dumps({**DEFAULT_PROFILE, **profile}),),
+        )
 
 
 def is_empty(profile: Dict) -> bool:
