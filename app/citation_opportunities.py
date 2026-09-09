@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -13,11 +14,20 @@ import requests
 from app import citation_opportunity_store
 
 
-ANALYSIS_VERSION = "1"
+ANALYSIS_VERSION = "2"
 CLASSIFICATIONS = {
     "strong_citation_opportunity", "potentially_useful", "not_relevant", "insufficient_evidence",
 }
 BANNED_LANGUAGE = {"citation theft", "misconduct", "should have known"}
+
+
+def _parse_model_json(raw: str) -> dict:
+    """Accept plain JSON or one complete JSON code fence, never surrounding prose."""
+    stripped = raw.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", stripped, flags=re.IGNORECASE)
+    if fenced:
+        stripped = fenced.group(1)
+    return json.loads(stripped)
 
 
 def stable_opportunity_id(paper_id: str, contribution_id: str, catalogue_version: str) -> str:
@@ -71,7 +81,7 @@ def judge(
     }, ensure_ascii=True)
     try:
         raw = complete(system, user)
-        parsed = json.loads(raw)
+        parsed = _parse_model_json(raw)
         if set(parsed) != {"classification", "confidence", "rationale", "counterargument", "evidence_locators"}:
             raise ValueError("unexpected judgement fields")
         classification = parsed["classification"]

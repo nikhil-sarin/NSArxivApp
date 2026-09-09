@@ -46,6 +46,27 @@ class CitationOpportunityTests(unittest.TestCase):
         self.assertEqual(first["opportunity_id"], second["opportunity_id"])
         self.assertEqual(len(citation_opportunity_store.list_opportunities()), 1)
 
+    def test_complete_json_fence_is_accepted_but_surrounding_prose_is_not(self):
+        payload = json.dumps({
+            "classification": "potentially_useful", "confidence": 0.72,
+            "rationale": "The method is directly relevant.",
+            "counterargument": "The implementation may be independent.",
+            "evidence_locators": ["Methods / page 3"],
+        })
+        accepted = citation_opportunities.judge(
+            PACKET, CONTRIBUTION, catalogue_version="1.0",
+            complete=lambda system, user: f"```json\n{payload}\n```",
+            provider="openai", model_name="test",
+        )
+        self.assertEqual(accepted["classification"], "potentially_useful")
+
+        rejected = citation_opportunities.judge(
+            PACKET, CONTRIBUTION, catalogue_version="1.1",
+            complete=lambda system, user: f"Here is the result:\n{payload}",
+            provider="openai", model_name="test",
+        )
+        self.assertEqual(rejected["classification"], "insufficient_evidence")
+
     def test_malformed_or_unsupported_model_output_is_insufficient(self):
         malformed = citation_opportunities.judge(
             PACKET, CONTRIBUTION, catalogue_version="1.0", complete=lambda s, u: "not json",
