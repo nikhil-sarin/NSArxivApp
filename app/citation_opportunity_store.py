@@ -55,6 +55,43 @@ def list_opportunities(status: str | None = None, limit: int = 100) -> list[dict
         db.close()
 
 
+def list_actionable(limit: int = 500) -> list[dict]:
+    """Return the review/export queue without letting negative analyses crowd it out."""
+    db = research_db.connect()
+    try:
+        rows = db.execute(
+            """
+            SELECT * FROM citation_opportunities
+            WHERE (
+                classification IN ('strong_citation_opportunity', 'potentially_useful')
+                AND status IN ('proposed', 'needs_review')
+            ) OR status IN ('confirmed', 'exported')
+            ORDER BY
+                CASE classification
+                    WHEN 'strong_citation_opportunity' THEN 0
+                    WHEN 'potentially_useful' THEN 1
+                    ELSE 2
+                END,
+                confidence DESC,
+                updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = json.loads(row["data_json"])
+            item.update({
+                "status": row["status"],
+                "export_status": row["export_status"],
+                "export_error": row["export_error"],
+            })
+            result.append(item)
+        return result
+    finally:
+        db.close()
+
+
 def has_analysis(paper_id: str, contribution_id: str, analysis_version: str, catalogue_version: str) -> bool:
     db = research_db.connect()
     try:

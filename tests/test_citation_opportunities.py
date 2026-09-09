@@ -46,6 +46,30 @@ class CitationOpportunityTests(unittest.TestCase):
         self.assertEqual(first["opportunity_id"], second["opportunity_id"])
         self.assertEqual(len(citation_opportunity_store.list_opportunities()), 1)
 
+    def test_actionable_queue_is_not_crowded_out_by_newer_negative_results(self):
+        base = {
+            "analysis_version": "2", "catalogue_version": "1.0", "confidence": 0.5,
+            "status": "proposed", "rationale": "Test", "counterargument": "Test",
+            "evidence": [], "reference_check": {}, "model": {},
+        }
+        positive = {
+            **base, "opportunity_id": "positive", "paper_id": "positive-paper",
+            "contribution_id": "redback", "classification": "strong_citation_opportunity",
+            "confidence": 0.9,
+        }
+        citation_opportunity_store.save(positive)
+        for index in range(105):
+            citation_opportunity_store.save({
+                **base, "opportunity_id": f"negative-{index}", "paper_id": f"paper-{index}",
+                "contribution_id": "redback", "classification": "insufficient_evidence",
+            })
+
+        self.assertNotIn("positive", {
+            item["opportunity_id"] for item in citation_opportunity_store.list_opportunities()
+        })
+        actionable = citation_opportunity_store.list_actionable()
+        self.assertEqual([item["opportunity_id"] for item in actionable], ["positive"])
+
     def test_complete_json_fence_is_accepted_but_surrounding_prose_is_not(self):
         payload = json.dumps({
             "classification": "potentially_useful", "confidence": 0.72,

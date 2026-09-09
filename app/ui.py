@@ -3001,17 +3001,20 @@ def render_citation_opportunities():
     discovery_jobs = [job for job in index_jobs.list_jobs() if job["kind"] == "citation_discovery"]
     pending_count = sum(job["status"] in {"queued", "running"} for job in discovery_jobs)
     failed_count = sum(job["status"] == "failed" for job in discovery_jobs)
-    all_opportunities = citation_opportunity_store.list_opportunities()
+    all_opportunities = citation_opportunity_store.list_actionable()
     reviewable = [
         item for item in all_opportunities
         if item["classification"] in {"strong_citation_opportunity", "potentially_useful"}
         and item["status"] in {"proposed", "needs_review"}
     ]
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Awaiting review", len(reviewable))
-    metric_cols[1].metric("Checks running", pending_count)
-    metric_cols[2].metric("Failed checks", failed_count)
-    metric_cols[3].metric("Catalogue works", len(contributions))
+    strong_count = sum(item["classification"] == "strong_citation_opportunity" for item in reviewable)
+    potential_count = sum(item["classification"] == "potentially_useful" for item in reviewable)
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("Strong", strong_count)
+    metric_cols[1].metric("Potential", potential_count)
+    metric_cols[2].metric("Checks running", pending_count)
+    metric_cols[3].metric("Failed checks", failed_count)
+    metric_cols[4].metric("Your works", len(contributions))
 
     with st.expander("Recheck a paper", expanded=False):
         paper_options = {_paper_label(paper): paper for paper in sorted(papers, key=_published_sort_key, reverse=True)}
@@ -3029,16 +3032,48 @@ def render_citation_opportunities():
 
     by_id = {item["id"]: item for item in catalogue["contributions"]}
     papers_by_id = {paper.get("arxiv_id", ""): paper for paper in papers}
-    displayed = reviewable + [
+    completed = [
         item for item in all_opportunities
         if item not in reviewable and item["status"] in {"confirmed", "exported"}
     ]
+    view = st.radio(
+        "View",
+        ["Strong matches", "All reviewable", "Confirmed and exported"],
+        horizontal=True,
+        key="citation_opportunity_view",
+    )
+    if view == "Strong matches":
+        displayed = [item for item in reviewable if item["classification"] == "strong_citation_opportunity"]
+    elif view == "All reviewable":
+        displayed = reviewable
+    else:
+        displayed = completed
+
+    if displayed:
+        summary_rows = []
+        for opportunity in displayed:
+            source_paper = papers_by_id.get(
+                opportunity["paper_id"], {"title": opportunity["paper_id"]}
+            )
+            matched = by_id.get(
+                opportunity["contribution_id"], {"name": opportunity["contribution_id"]}
+            )
+            summary_rows.append({
+                "Match": "Strong" if opportunity["classification"] == "strong_citation_opportunity" else "Potential",
+                "Paper": source_paper.get("title", opportunity["paper_id"]),
+                "Your work": matched.get("name", opportunity["contribution_id"]),
+                "Confidence": f"{opportunity['confidence']:.0%}",
+                "Status": opportunity["status"].replace("_", " ").title(),
+            })
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
     if not displayed:
-        st.info("No evidence-backed opportunities are awaiting review.")
+        st.info(f"No opportunities in {view.lower()}.")
     for opportunity in displayed:
         source_paper = papers_by_id.get(opportunity["paper_id"], {"title": opportunity["paper_id"], "authors": []})
         matched = by_id.get(opportunity["contribution_id"], {"name": opportunity["contribution_id"], "canonical_citations": []})
-        with st.expander(f"{source_paper.get('title')} - {opportunity['classification']}", expanded=False):
+        match_label = "Strong" if opportunity["classification"] == "strong_citation_opportunity" else "Potential"
+        panel_title = f"{match_label}: {source_paper.get('title')} | {matched.get('name')}"
+        with st.expander(panel_title, expanded=match_label == "Strong"):
             st.markdown(f"[{source_paper.get('title')}](https://arxiv.org/abs/{opportunity['paper_id']})")
             st.metric("Confidence", f"{opportunity['confidence']:.0%}")
             citation = citation_opportunities.preferred_citation(matched)
