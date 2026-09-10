@@ -53,8 +53,16 @@ def discover_paper(paper: dict, paper_text: str, *, force: bool = False) -> dict
         paper_id,
         [item["id"] for item in contributions],
     )
+    if citation_evidence.paper_is_already_published(paper):
+        return {
+            "paper_id": paper_id, "checked": len(contributions),
+            "model_judgements": 0, "reviewable": 0,
+            "ineligible_reason": "accepted_or_published",
+        }
     for contribution in contributions:
         checked += 1
+        if not citation_evidence.contribution_predates_paper(paper_id, contribution):
+            continue
         packet = citation_evidence.build_evidence_packet(
             paper_id,
             paper_text,

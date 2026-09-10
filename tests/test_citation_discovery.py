@@ -82,6 +82,23 @@ class CitationDiscoveryTests(unittest.TestCase):
         delete_unreviewed.assert_called_once_with("2609.2", ["tool"])
         judge.assert_not_called()
 
+    @mock.patch("app.citation_discovery.citation_opportunities.judge")
+    @mock.patch("app.citation_discovery.citation_evidence.build_evidence_packet")
+    @mock.patch("app.citation_discovery.contribution_catalogue.load")
+    def test_published_paper_is_cleaned_but_never_judged(self, load_catalogue, build_packet, judge):
+        load_catalogue.return_value = {
+            "schema_version": "1.2", "owner": "Researcher",
+            "contributions": [{"id": "tool", "name": "Tool", "enabled": True}],
+        }
+        result = citation_discovery.discover_paper(
+            {"arxiv_id": "2609.2", "comment": "Accepted for publication in ApJ"},
+            "Public paper body",
+            force=True,
+        )
+        self.assertEqual(result["ineligible_reason"], "accepted_or_published")
+        build_packet.assert_not_called()
+        judge.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

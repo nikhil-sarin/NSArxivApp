@@ -14,7 +14,7 @@ import requests
 from app import citation_opportunity_store
 
 
-ANALYSIS_VERSION = "2"
+ANALYSIS_VERSION = "3"
 CLASSIFICATIONS = {
     "strong_citation_opportunity", "potentially_useful", "not_relevant", "insufficient_evidence",
 }

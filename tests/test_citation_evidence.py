@@ -1,7 +1,11 @@
 import unittest
 
 from app import contribution_catalogue
-from app.citation_evidence import build_evidence_packet
+from app.citation_evidence import (
+    build_evidence_packet,
+    contribution_predates_paper,
+    paper_is_already_published,
+)
 
 
 CONTRIBUTION = {
@@ -21,6 +25,15 @@ CONTRIBUTION = {
 
 
 class CitationEvidenceTests(unittest.TestCase):
+    def test_temporal_and_publication_eligibility(self):
+        contribution = {"canonical_citations": [{"arxiv_id": "2605.19571"}]}
+        self.assertTrue(contribution_predates_paper("2609.09520v1", contribution))
+        self.assertFalse(contribution_predates_paper("2509.09520", contribution))
+        self.assertFalse(contribution_predates_paper("2605.19571", contribution))
+        self.assertTrue(paper_is_already_published({"comment": "Accepted for publication in MNRAS"}))
+        self.assertTrue(paper_is_already_published({"journal_ref": "ApJ 999, 1"}))
+        self.assertFalse(paper_is_already_published({"comment": "Submitted to ApJ"}))
+
     def test_exact_evidence_and_stable_locator(self):
         text = (
             "Methods\n\nWe use Bilby for transient light curve inference on the optical observations.\n\n"

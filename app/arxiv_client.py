@@ -29,6 +29,7 @@ class ArxivSearchResult:
     pdf_url: str
     categories: List[str]
     comment: Optional[str] = None
+    journal_ref: Optional[str] = None
 
 
 class ArxivClient:
@@ -163,6 +164,12 @@ class ArxivClient:
             flags=re.I | re.S,
         )
         comment = self._strip_html(comments_match.group(1)) if comments_match else None
+        journal_match = re.search(
+            r'<span class="descriptor">Journal reference:</span>\s*(.*?)\s*</td>',
+            html,
+            flags=re.I | re.S,
+        )
+        journal_ref = self._strip_html(journal_match.group(1)) if journal_match else None
 
         return ArxivSearchResult(
             entry_id=f"https://arxiv.org/abs/{canonical_id}",
@@ -173,6 +180,7 @@ class ArxivClient:
             pdf_url=pdf_url,
             categories=categories,
             comment=comment,
+            journal_ref=journal_ref,
         )
 
     def _search_html(
@@ -518,4 +526,5 @@ class ArxivClient:
             "arxiv_id": result.entry_id.split("/")[-1],
             "categories": result.categories,
             "comment": result.comment,
+            "journal_ref": result.journal_ref,
         }

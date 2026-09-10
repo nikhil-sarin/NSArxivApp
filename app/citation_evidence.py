@@ -10,6 +10,37 @@ from app.contribution_catalogue import normalize
 
 MAX_QUOTE_CHARS = 700
 SIGNAL_WORDS_TO_IGNORE = {"a", "an", "and", "for", "in", "of", "on", "the", "to", "using", "with"}
+PUBLISHED_COMMENT_RE = re.compile(
+    r"\b(accepted (?:for|in|to|by)|published (?:in|as)|in press|to appear(?: in)?)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def paper_is_already_published(paper: dict) -> bool:
+    """Return true when metadata says the manuscript is accepted or published."""
+    journal_ref = str(paper.get("journal_ref") or paper.get("journal_reference") or "").strip()
+    comment = str(paper.get("comment") or paper.get("comments") or "").strip()
+    return bool(journal_ref or PUBLISHED_COMMENT_RE.search(comment))
+
+
+def _arxiv_sequence(value: str) -> tuple[int, int, int] | None:
+    match = re.fullmatch(r"(\d{2})(\d{2})\.(\d{4,5})(?:v\d+)?", str(value).strip())
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def contribution_predates_paper(paper_id: str, contribution: dict) -> bool:
+    """Require the contribution to have been public before the candidate paper."""
+    paper_sequence = _arxiv_sequence(paper_id)
+    contribution_sequences = [
+        sequence
+        for citation in contribution.get("canonical_citations", [])
+        if (sequence := _arxiv_sequence(citation.get("arxiv_id", ""))) is not None
+    ]
+    if paper_sequence is None or not contribution_sequences:
+        return True
+    return min(contribution_sequences) < paper_sequence
 
 
 def _references_start(text: str) -> int:

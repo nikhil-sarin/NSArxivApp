@@ -43,6 +43,8 @@ class AnnouncementPaper:
     v1_date: str
     abs_url: str
     pdf_url: str
+    comment: str = ""
+    journal_ref: str = ""
 
 
 def parse_catchup_new_ids(html: str) -> list[str]:
@@ -169,6 +171,8 @@ def parse_get_record(xml_bytes: bytes) -> AnnouncementPaper | None:
     primary_category = categories[0] if categories else ""
     title = " ".join((record.findtext(".//raw:title", namespaces=NS) or "").split())
     abstract = " ".join((record.findtext(".//raw:abstract", namespaces=NS) or "").split())
+    comment = " ".join((record.findtext(".//raw:comments", namespaces=NS) or "").split())
+    journal_ref = " ".join((record.findtext(".//raw:journal-ref", namespaces=NS) or "").split())
     authors = _split_authors((record.findtext(".//raw:authors", namespaces=NS) or "").strip())
     versions = record.findall(".//raw:version", NS)
     v1_date = ""
@@ -187,6 +191,8 @@ def parse_get_record(xml_bytes: bytes) -> AnnouncementPaper | None:
         v1_date=v1_date,
         abs_url=f"https://arxiv.org/abs/{arxiv_id}",
         pdf_url=f"https://arxiv.org/pdf/{arxiv_id}",
+        comment=comment,
+        journal_ref=journal_ref,
     )
 
 
@@ -246,7 +252,8 @@ def paper_to_metadata(paper: AnnouncementPaper) -> dict:
         "pdf_url": paper.pdf_url,
         "arxiv_id": paper.arxiv_id,
         "categories": paper.categories,
-        "comment": "",
+        "comment": paper.comment,
+        "journal_ref": paper.journal_ref,
         "primary_category": paper.primary_category,
         "announced_date": paper.announced_date,
         "v1_date": paper.v1_date,
