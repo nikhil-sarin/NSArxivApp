@@ -1592,10 +1592,17 @@ def render_schedule():
             sched_query = st.text_input("Search query for scheduled job", placeholder="neutron star kilonova")
         sched_cats = st.multiselect(
             "Categories",
-            ["cs.LG", "cs.CL", "cs.CV", "cs.AI", "astro-ph.HE", "astro-ph.CO", "astro-ph.GA", "physics.hep-th", "gr-qc"],
-            default=st.session_state.get("sidebar_default_cats", ["astro-ph.HE"]),
+            ["cs.LG", "cs.CL", "cs.CV", "cs.AI", "astro-ph.HE", "astro-ph.SR", "astro-ph.CO", "astro-ph.GA", "physics.hep-th", "gr-qc"],
+            default=st.session_state.get("sidebar_default_cats", ["astro-ph.HE", "astro-ph.SR", "gr-qc"]),
         )
-        sched_max = st.slider("Max results per run", 5, 50, 20)
+        sched_max = st.number_input(
+            "Max results per run",
+            min_value=0,
+            max_value=500,
+            value=0 if mode == "new-submissions" else 20,
+            step=10,
+            help="Use 0 to ingest every matching announcement. A positive value keeps only the first N papers.",
+        )
         sched_days_back = st.slider(
             "Days back",
             0,

@@ -216,12 +216,12 @@ Automatically fetch and summarize new papers on a schedule, even when the UI is 
 ```bash
 python -m app.fetch_job \
   --mode new-submissions \
-  --categories astro-ph.HE gr-qc \
-  --max-results 20 \
+  --categories astro-ph.HE astro-ph.SR gr-qc \
+  --max-results 0 \
   --days-back 1
 ```
 
-In `new-submissions` mode, the job starts from the requested UTC announcement day and automatically backs up to the latest non-empty announcement date, so weekend cron runs still pick up the newest ArXivSelaa-style batch.
+In `new-submissions` mode, `--max-results 0` ingests every announcement in the selected categories. The job starts from the requested UTC announcement day and automatically backs up to the latest non-empty announcement date, so weekend cron runs still pick up the newest ArXivSelaa-style batch.
 
 Keyword-search mode remains available:
 
@@ -238,7 +238,7 @@ python -m app.fetch_job \
 
 Add to your crontab (`crontab -e`):
 ```
-0 7 * * * cd /path/to/NSArxivApp && /path/to/python -m app.fetch_job --mode new-submissions --categories astro-ph.HE --max-results 20 --days-back 1 >> /path/to/NSArxivApp/data/fetch.log 2>&1
+0 7 * * * cd /path/to/NSArxivApp && /path/to/python -m app.fetch_job --mode new-submissions --categories astro-ph.HE astro-ph.SR gr-qc --max-results 0 --days-back 1 >> /path/to/NSArxivApp/data/fetch.log 2>&1
 ```
 
 The **Schedule** tab can also install a managed Linux cron entry for you directly.
