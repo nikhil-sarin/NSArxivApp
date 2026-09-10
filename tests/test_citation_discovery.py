@@ -79,7 +79,7 @@ class CitationDiscoveryTests(unittest.TestCase):
             {"arxiv_id": "2609.2", "title": "Unrelated"}, "Public paper body", force=True
         )
 
-        delete_unreviewed.assert_called_once_with("2609.2", "tool")
+        delete_unreviewed.assert_called_once_with("2609.2", ["tool"])
         judge.assert_not_called()
 
 

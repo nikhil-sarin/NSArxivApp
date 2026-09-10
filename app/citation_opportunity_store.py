@@ -104,13 +104,31 @@ def has_analysis(paper_id: str, contribution_id: str, analysis_version: str, cat
         db.close()
 
 
-def delete_unreviewed_analyses(paper_id: str, contribution_id: str) -> None:
+def analyzed_contribution_ids(paper_id: str, analysis_version: str, catalogue_version: str) -> set[str]:
+    """Return all contribution IDs already analysed for one paper/version."""
+    db = research_db.connect()
+    try:
+        rows = db.execute(
+            "SELECT contribution_id FROM citation_opportunities WHERE paper_id=? "
+            "AND analysis_version=? AND catalogue_version=?",
+            (paper_id, analysis_version, catalogue_version),
+        ).fetchall()
+        return {row["contribution_id"] for row in rows}
+    finally:
+        db.close()
+
+
+def delete_unreviewed_analyses(paper_id: str, contribution_ids: list[str]) -> None:
     """Replace stale proposed results while preserving confirmed/exported decisions."""
+    if not contribution_ids:
+        return
+    placeholders = ",".join("?" for _ in contribution_ids)
     with research_db.transaction() as db:
         db.execute(
-            "DELETE FROM citation_opportunities WHERE paper_id=? AND contribution_id=? "
+            f"DELETE FROM citation_opportunities WHERE paper_id=? "
+            f"AND contribution_id IN ({placeholders}) "
             "AND status IN ('proposed', 'needs_review')",
-            (paper_id, contribution_id),
+            (paper_id, *contribution_ids),
         )
 
 

@@ -39,17 +39,21 @@ def discover_paper(paper: dict, paper_text: str, *, force: bool = False) -> dict
     )
     judge_model = PaperSummarizer(provider=provider)
     checked = judged = reviewable = 0
-    for contribution in catalogue["contributions"]:
-        if not contribution.get("enabled", True):
-            continue
-        if not force and citation_opportunity_store.has_analysis(
-            paper_id,
-            contribution["id"],
-            citation_opportunities.ANALYSIS_VERSION,
-            catalogue["schema_version"],
-        ):
-            continue
-        citation_opportunity_store.delete_unreviewed_analyses(paper_id, contribution["id"])
+    contributions = [
+        contribution for contribution in catalogue["contributions"]
+        if contribution.get("enabled", True)
+    ]
+    analysed = set() if force else citation_opportunity_store.analyzed_contribution_ids(
+        paper_id,
+        citation_opportunities.ANALYSIS_VERSION,
+        catalogue["schema_version"],
+    )
+    contributions = [item for item in contributions if item["id"] not in analysed]
+    citation_opportunity_store.delete_unreviewed_analyses(
+        paper_id,
+        [item["id"] for item in contributions],
+    )
+    for contribution in contributions:
         checked += 1
         packet = citation_evidence.build_evidence_packet(
             paper_id,
