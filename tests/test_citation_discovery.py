@@ -62,6 +62,26 @@ class CitationDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["model_judgements"], 0)
         judge.assert_not_called()
 
+    @mock.patch("app.citation_discovery.citation_opportunity_store.delete_analysis")
+    @mock.patch("app.citation_discovery.citation_opportunities.judge")
+    @mock.patch("app.citation_discovery.citation_evidence.build_evidence_packet")
+    @mock.patch("app.citation_discovery.contribution_catalogue.load")
+    def test_force_removes_stale_result_when_pair_is_no_longer_a_candidate(
+        self, load_catalogue, build_packet, judge, delete_analysis
+    ):
+        load_catalogue.return_value = {
+            "schema_version": "1.2", "owner": "Researcher",
+            "contributions": [{"id": "tool", "name": "Tool", "enabled": True}],
+        }
+        build_packet.return_value = {"candidate": False}
+
+        citation_discovery.discover_paper(
+            {"arxiv_id": "2609.2", "title": "Unrelated"}, "Public paper body", force=True
+        )
+
+        delete_analysis.assert_called_once_with("2609.2", "tool", "2", "1.2")
+        judge.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

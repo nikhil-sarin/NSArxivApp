@@ -145,12 +145,20 @@ def _passages_from_text(text: str, signals: list[str], rules: list[dict]) -> lis
         })
 
     for rule in rules:
+        candidates = []
         for index, match in enumerate(matches):
             context = matches[max(0, index - 1):index + 2]
             raw_start = context[0].start()
             raw_quote = text[raw_start:context[-1].end()].strip()
             if not raw_quote or not _rule_match(rule, raw_quote):
                 continue
+            preferred_score = sum(
+                _contains_term(normalize(raw_quote), term)
+                for term in rule.get("preferred_evidence", [])
+            )
+            candidates.append((preferred_score, -raw_start, raw_quote, raw_start))
+        if candidates:
+            _, _, raw_quote, raw_start = max(candidates, key=lambda item: (item[0], item[1]))
             normalized_quote = normalize(raw_quote)
             primary_terms = [
                 term for term in rule.get("all", [[]])[0]
@@ -162,7 +170,6 @@ def _passages_from_text(text: str, signals: list[str], rules: list[dict]) -> lis
                 _rule_terms([rule]),
                 preferred_anchor_terms=primary_terms,
             )
-            break
         if len(passages) >= 5:
             return passages
 

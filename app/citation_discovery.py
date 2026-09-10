@@ -58,6 +58,13 @@ def discover_paper(paper: dict, paper_text: str, *, force: bool = False) -> dict
             corpus_chunks=research_db.documents_for_owner("paper_content", paper_id),
         )
         if not packet["candidate"]:
+            if force:
+                citation_opportunity_store.delete_analysis(
+                    paper_id,
+                    contribution["id"],
+                    citation_opportunities.ANALYSIS_VERSION,
+                    catalogue["schema_version"],
+                )
             continue
         result = citation_opportunities.judge(
             packet,
