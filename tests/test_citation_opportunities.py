@@ -147,6 +147,30 @@ class CitationOpportunityTests(unittest.TestCase):
         self.assertEqual(context["contribution"]["url"], "https://example.org/redback")
         self.assertEqual(context["evidence"][0]["quote"], PACKET["passages"][0]["quote"])
 
+    @mock.patch("app.citation_opportunities.requests.post")
+    def test_export_uses_configured_orchestrator_bearer_token(self, post):
+        post.return_value.json.return_value = {"candidate_ids": ["candidate_1"]}
+        opportunity = {
+            "opportunity_id": "cop_1", "paper_id": "2609.1", "analysis_version": "2",
+            "catalogue_version": "1.2", "classification": "strong_citation_opportunity",
+            "confidence": 0.9, "rationale": "Relevant", "counterargument": "May not apply",
+            "evidence": PACKET["passages"], "status": "confirmed",
+        }
+        with mock.patch.dict(
+            "os.environ", {"LOCAL_ORCHESTRATOR_API_TOKEN": "machine-secret"}
+        ):
+            citation_opportunities.export_bundle(
+                opportunity,
+                {"title": "A paper", "authors": ["A. Author"]},
+                CONTRIBUTION,
+                url="http://127.0.0.1:8775/v1/import-bundles",
+            )
+
+        self.assertEqual(
+            post.call_args.kwargs["headers"],
+            {"Authorization": "Bearer machine-secret"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

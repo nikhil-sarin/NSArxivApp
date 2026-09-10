@@ -310,7 +310,7 @@ Backfill a bounded recent slice after expanding the catalogue:
 python -m app.citation_backfill --days 90 --max-papers 100
 ```
 
-Only `strong_citation_opportunity` and `potentially_useful` findings can be confirmed. Confirmation posts a stable, bounded ImportBundle to `LOCAL_ORCHESTRATOR_URL`; it includes quotes and catalogue metadata, never full paper text or secrets. LocalOrchestrator then requires separate candidate and exact-plan approval before a local model can generate editable subject/body text. Neither app sends email or creates a Gmail draft.
+Only `strong_citation_opportunity` and `potentially_useful` findings can be confirmed. Confirmation posts a stable, bounded ImportBundle to `LOCAL_ORCHESTRATOR_URL` using `LOCAL_ORCHESTRATOR_API_TOKEN`; it includes quotes and catalogue metadata, never full paper text or secrets. LocalOrchestrator then requires separate candidate and exact-plan approval before a local model can generate editable subject/body text. Neither app sends email or creates a Gmail draft.
 
 ---
 

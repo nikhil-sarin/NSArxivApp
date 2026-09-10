@@ -171,8 +171,10 @@ def build_import_bundle(opportunity: dict, paper: dict, contribution: dict, *, t
 def export_bundle(opportunity: dict, paper: dict, contribution: dict, *, tone_note: str = "", url: str | None = None) -> dict:
     bundle = build_import_bundle(opportunity, paper, contribution, tone_note=tone_note)
     endpoint = url or os.getenv("LOCAL_ORCHESTRATOR_URL", "http://127.0.0.1:8775/v1/import-bundles")
+    api_token = os.getenv("LOCAL_ORCHESTRATOR_API_TOKEN", "").strip()
+    headers = {"Authorization": f"Bearer {api_token}"} if api_token else {}
     try:
-        response = requests.post(endpoint, json=bundle, timeout=15)
+        response = requests.post(endpoint, json=bundle, headers=headers, timeout=15)
         response.raise_for_status()
         result = response.json()
     except (requests.RequestException, ValueError) as exc:
