@@ -99,7 +99,8 @@
         "strength": "strong",
         "all": [
           ["mass loss history", "terminal mass loss", "eruptive mass loss"],
-          ["wind velocity", "lookback time", "density profile", "csm"]
+          ["lookback time", "look back time"],
+          ["wind velocity", "wind speed", "steady wind"]
         ]
       }],
       "key_claims": [
@@ -226,7 +227,7 @@
       "aliases": ["magnetar driven kilonovae", "magnetar kilonova diversity"],
       "strong_signals": ["magnetar-driven kilonova lightcurves", "long-lived neutron star remnant kilonova model"],
       "weak_signals": ["engine-powered kilonova diversity", "magnetar energy injection merger ejecta", "bright blue magnetar kilonova"],
-      "exclusions": ["black hole remnant kilonova without engine injection"],
+      "exclusions": ["black hole remnant kilonova without engine injection", "magnetar powered supernova", "magnetar energy injection supernova"],
       "public_url": "https://arxiv.org/abs/2205.14159",
       "contact_framing": "Offer the model grid and diversity result as relevant kilonova context."
     },

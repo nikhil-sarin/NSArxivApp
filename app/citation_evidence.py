@@ -50,9 +50,13 @@ def _matching_signals(contribution: dict, body: str) -> tuple[list[str], list[st
 
 def _matching_rules(contribution: dict, body: str) -> tuple[list[dict], list[dict]]:
     paragraphs = [part for part in re.split(r"\n\s*\n", body) if part.strip()]
+    context_windows = [
+        "\n\n".join(paragraphs[max(0, index - 1):index + 2])
+        for index in range(len(paragraphs))
+    ]
     matched = [
         rule for rule in contribution.get("discovery_rules", [])
-        if any(_rule_match(rule, paragraph) for paragraph in paragraphs)
+        if any(_rule_match(rule, window) for window in context_windows)
     ]
     return (
         [rule for rule in matched if rule.get("strength") == "strong"],
@@ -113,18 +117,60 @@ def _locator_for_offset(spans: list[tuple[int, str]], offset: int) -> str:
 def _passages_from_text(text: str, signals: list[str], rules: list[dict]) -> list[dict]:
     spans = _section_spans(text)
     passages = []
-    for match in re.finditer(r"[^\n]+(?:\n(?!\n)[^\n]+)*", text[:_references_start(text)]):
-        raw_quote = match.group(0).strip()
-        if not raw_quote or not _evidence_match(raw_quote, signals, rules):
-            continue
-        quote, relative_start = _bounded_matching_quote(raw_quote, signals + _rule_terms(rules))
-        absolute_start = match.start() + relative_start
+    matches = list(re.finditer(r"[^\n]+(?:\n(?!\n)[^\n]+)*", text[:_references_start(text)]))
+    seen_offsets: set[tuple[int, int]] = set()
+
+    def add_passage(
+        raw_quote: str,
+        raw_start: int,
+        evidence_terms: list[str],
+        *,
+        preferred_anchor_terms: list[str] | None = None,
+    ) -> None:
+        quote, relative_start = _bounded_matching_quote(
+            raw_quote,
+            evidence_terms,
+            preferred_anchor_terms=preferred_anchor_terms,
+        )
+        absolute_start = raw_start + relative_start
+        offset_key = (absolute_start, absolute_start + len(quote))
+        if offset_key in seen_offsets:
+            return
+        seen_offsets.add(offset_key)
         passages.append({
             "locator": f"{_locator_for_offset(spans, absolute_start)} / characters {absolute_start}-{absolute_start + len(quote)}",
             "quote": quote,
             "start_offset": absolute_start,
             "end_offset": absolute_start + len(quote),
         })
+
+    for rule in rules:
+        for index, match in enumerate(matches):
+            context = matches[max(0, index - 1):index + 2]
+            raw_start = context[0].start()
+            raw_quote = text[raw_start:context[-1].end()].strip()
+            if not raw_quote or not _rule_match(rule, raw_quote):
+                continue
+            normalized_quote = normalize(raw_quote)
+            primary_terms = [
+                term for term in rule.get("all", [[]])[0]
+                if _contains_term(normalized_quote, term)
+            ]
+            add_passage(
+                raw_quote,
+                raw_start,
+                _rule_terms([rule]),
+                preferred_anchor_terms=primary_terms,
+            )
+            break
+        if len(passages) >= 5:
+            return passages
+
+    for match in matches:
+        raw_quote = match.group(0).strip()
+        if not raw_quote or not any(_signal_match(signal, raw_quote) for signal in signals):
+            continue
+        add_passage(raw_quote, match.start(), signals)
         if len(passages) >= 5:
             break
     return passages
@@ -149,13 +195,20 @@ def _passages_from_chunks(chunks: Iterable[dict], signals: list[str], rules: lis
     return passages
 
 
-def _bounded_matching_quote(text: str, signals: list[str]) -> tuple[str, int]:
+def _bounded_matching_quote(
+    text: str,
+    signals: list[str],
+    *,
+    preferred_anchor_terms: list[str] | None = None,
+) -> tuple[str, int]:
     """Return an exact bounded substring centered near a matched signal term."""
     if len(text) <= MAX_QUOTE_CHARS:
         return text, 0
+    anchor_source = preferred_anchor_terms or signals
+    minimum_word_length = 2 if preferred_anchor_terms else 5
     normalized_terms = [
-        word for signal in signals for word in normalize(signal).split()
-        if len(word) >= 5 and word not in SIGNAL_WORDS_TO_IGNORE
+        word for signal in anchor_source for word in normalize(signal).split()
+        if len(word) >= minimum_word_length and word not in SIGNAL_WORDS_TO_IGNORE
     ]
     lower = text.lower()
     positions = [lower.find(term) for term in normalized_terms if lower.find(term) >= 0]

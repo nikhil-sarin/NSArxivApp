@@ -65,8 +65,9 @@ class CitationEvidenceTests(unittest.TestCase):
 
     def test_grouped_concepts_match_language_not_covered_by_fixed_phrase(self):
         text = (
-            "Methods\n\nWe performed Bayesian inference using bilby with dynesty to fit each epoch of "
-            "the radio flare.\n\nReferences\n\nOther et al. 2025"
+            "Methods\n\nWe fitted the radio spectrum at each epoch.\n\n"
+            "We performed Bayesian inference using bilby with the dynesty sampler.\n\n"
+            "The transient model describes the data.\n\nReferences\n\nOther et al. 2025"
         )
         packet = build_evidence_packet("2609.2", text, CONTRIBUTION, owner_name_variants=[])
         self.assertTrue(packet["candidate"])
@@ -115,6 +116,14 @@ class CitationEvidenceTests(unittest.TestCase):
                 )
                 self.assertTrue(packet["candidate"])
                 self.assertTrue(packet["matched_strong_rules"])
+
+        kilonova = by_id["magnetar-driven-kilonovae"]
+        supernova_only = (
+            "A magnetar powered supernova receives energy injection into its ejecta and light curve."
+        )
+        self.assertFalse(build_evidence_packet(
+            "2609.test", supernova_only, kilonova, owner_name_variants=[]
+        )["candidate"])
 
 
 if __name__ == "__main__":
