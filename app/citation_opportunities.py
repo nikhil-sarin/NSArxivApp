@@ -76,6 +76,7 @@ def judge(
         "contribution": {
             "id": contribution["id"], "name": contribution["name"], "kind": contribution["kind"],
             "contact_framing": contribution["contact_framing"],
+            "key_claims": contribution.get("key_claims", []),
         },
         "evidence_packet": packet,
     }, ensure_ascii=True)

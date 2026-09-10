@@ -1,5 +1,6 @@
 import unittest
 
+from app import contribution_catalogue
 from app.citation_evidence import build_evidence_packet
 
 
@@ -12,6 +13,10 @@ CONTRIBUTION = {
     "strong_signals": ["bilby transient light curve inference"],
     "weak_signals": ["transient parameter inference", "kilonova light curve modelling"],
     "exclusions": ["bilby gravitational wave inference"],
+    "discovery_rules": [{
+        "name": "Bilby EM inference", "strength": "strong",
+        "all": [["bilby"], ["bayesian inference", "fitting"], ["radio", "transient"]],
+    }],
 }
 
 
@@ -57,6 +62,59 @@ class CitationEvidenceTests(unittest.TestCase):
         self.assertTrue(packet["reference_check"]["canonical_citation_found"])
         self.assertEqual(packet["reference_check"]["matched_identifiers"][0]["location"], "document")
         self.assertFalse(packet["candidate"])
+
+    def test_grouped_concepts_match_language_not_covered_by_fixed_phrase(self):
+        text = (
+            "Methods\n\nWe performed Bayesian inference using bilby with dynesty to fit each epoch of "
+            "the radio flare.\n\nReferences\n\nOther et al. 2025"
+        )
+        packet = build_evidence_packet("2609.2", text, CONTRIBUTION, owner_name_variants=[])
+        self.assertTrue(packet["candidate"])
+        self.assertEqual(packet["matched_strong_rules"], ["Bilby EM inference"])
+        self.assertIn("Bayesian inference using bilby", packet["passages"][0]["quote"])
+
+    def test_grouped_concepts_still_respect_canonical_citation_and_exclusions(self):
+        cited = (
+            "We performed Bayesian inference using bilby to fit the radio transient. "
+            "See doi:10.1093/mnras/stae1238."
+        )
+        self.assertFalse(build_evidence_packet(
+            "2609.3", cited, CONTRIBUTION, owner_name_variants=[]
+        )["candidate"])
+
+        gravitational_wave = "We performed bilby fitting for gravitational wave inference of a transient."
+        self.assertFalse(build_evidence_packet(
+            "2609.4", gravitational_wave, CONTRIBUTION, owner_name_variants=[]
+        )["candidate"])
+
+    def test_catalogue_rules_cover_bilby_mixing_and_csm_failure_modes(self):
+        catalogue = contribution_catalogue.load()
+        by_id = {item["id"]: item for item in catalogue["contributions"]}
+        cases = [
+            (
+                "redback",
+                "We used Bilby with dynesty for Bayesian inference of the radio transient spectrum.",
+            ),
+            (
+                "nickel-mixing-supernovae",
+                "Our hydrodynamical supernova models assume extensive mixing of 56 Ni through the ejecta.",
+            ),
+            (
+                "generalised-csm-framework",
+                "The CSM interaction light curve requires a broken density profile and a reconstructed mass loss history.",
+            ),
+            (
+                "generalised-csm-framework",
+                "We convert the terminal mass loss history to lookback time using a fixed wind velocity.",
+            ),
+        ]
+        for contribution_id, text in cases:
+            with self.subTest(contribution_id=contribution_id, text=text):
+                packet = build_evidence_packet(
+                    "2609.test", text, by_id[contribution_id], owner_name_variants=[]
+                )
+                self.assertTrue(packet["candidate"])
+                self.assertTrue(packet["matched_strong_rules"])
 
 
 if __name__ == "__main__":

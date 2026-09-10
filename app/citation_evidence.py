@@ -25,6 +25,19 @@ def _signal_match(signal: str, text: str) -> bool:
     return sum(word in words for word in required) / len(required) >= 0.75
 
 
+def _contains_term(normalized_text: str, term: str) -> bool:
+    normalized_term = normalize(term)
+    return bool(normalized_term) and f" {normalized_term} " in f" {normalized_text} "
+
+
+def _rule_match(rule: dict, text: str) -> bool:
+    normalized_text = normalize(text)
+    return all(
+        any(_contains_term(normalized_text, term) for term in group)
+        for group in rule.get("all", [])
+    )
+
+
 def _matching_signals(contribution: dict, body: str) -> tuple[list[str], list[str], list[str]]:
     paragraphs = [part for part in re.split(r"\n\s*\n", body) if part.strip()]
     matched = lambda signals: [signal for signal in signals if any(_signal_match(signal, p) for p in paragraphs)]
@@ -32,6 +45,28 @@ def _matching_signals(contribution: dict, body: str) -> tuple[list[str], list[st
         matched(contribution.get("strong_signals", [])),
         matched(contribution.get("weak_signals", [])),
         matched(contribution.get("exclusions", [])),
+    )
+
+
+def _matching_rules(contribution: dict, body: str) -> tuple[list[dict], list[dict]]:
+    paragraphs = [part for part in re.split(r"\n\s*\n", body) if part.strip()]
+    matched = [
+        rule for rule in contribution.get("discovery_rules", [])
+        if any(_rule_match(rule, paragraph) for paragraph in paragraphs)
+    ]
+    return (
+        [rule for rule in matched if rule.get("strength") == "strong"],
+        [rule for rule in matched if rule.get("strength") == "weak"],
+    )
+
+
+def _rule_terms(rules: list[dict]) -> list[str]:
+    return [term for rule in rules for group in rule.get("all", []) for term in group]
+
+
+def _evidence_match(text: str, signals: list[str], rules: list[dict]) -> bool:
+    return any(_signal_match(signal, text) for signal in signals) or any(
+        _rule_match(rule, text) for rule in rules
     )
 
 
@@ -75,14 +110,14 @@ def _locator_for_offset(spans: list[tuple[int, str]], offset: int) -> str:
     return next((name for start, name in reversed(spans) if start <= offset), "full text")
 
 
-def _passages_from_text(text: str, signals: list[str]) -> list[dict]:
+def _passages_from_text(text: str, signals: list[str], rules: list[dict]) -> list[dict]:
     spans = _section_spans(text)
     passages = []
     for match in re.finditer(r"[^\n]+(?:\n(?!\n)[^\n]+)*", text[:_references_start(text)]):
         raw_quote = match.group(0).strip()
-        if not raw_quote or not any(_signal_match(signal, raw_quote) for signal in signals):
+        if not raw_quote or not _evidence_match(raw_quote, signals, rules):
             continue
-        quote, relative_start = _bounded_matching_quote(raw_quote, signals)
+        quote, relative_start = _bounded_matching_quote(raw_quote, signals + _rule_terms(rules))
         absolute_start = match.start() + relative_start
         passages.append({
             "locator": f"{_locator_for_offset(spans, absolute_start)} / characters {absolute_start}-{absolute_start + len(quote)}",
@@ -95,11 +130,11 @@ def _passages_from_text(text: str, signals: list[str]) -> list[dict]:
     return passages
 
 
-def _passages_from_chunks(chunks: Iterable[dict], signals: list[str]) -> list[dict]:
+def _passages_from_chunks(chunks: Iterable[dict], signals: list[str], rules: list[dict]) -> list[dict]:
     passages = []
     for chunk in chunks:
         text = str(chunk.get("text", ""))
-        if not any(_signal_match(signal, text) for signal in signals):
+        if not _evidence_match(text, signals, rules):
             continue
         locator = chunk.get("locator", {})
         label = (
@@ -107,7 +142,7 @@ def _passages_from_chunks(chunks: Iterable[dict], signals: list[str]) -> list[di
             if locator.get("page") else
             f"{locator.get('section') or locator.get('source') or 'indexed text'} / chunk {locator.get('chunk', 1)}"
         )
-        quote, _ = _bounded_matching_quote(text, signals)
+        quote, _ = _bounded_matching_quote(text, signals + _rule_terms(rules))
         passages.append({"locator": label, "quote": quote, "start_offset": None, "end_offset": None})
         if len(passages) >= 5:
             break
@@ -140,14 +175,16 @@ def build_evidence_packet(
     """Create an inspectable packet before any model judgement is allowed."""
     body = paper_text[:_references_start(paper_text)]
     strong, weak, exclusions = _matching_signals(contribution, body)
+    strong_rules, weak_rules = _matching_rules(contribution, body)
     all_signals = strong + weak
-    passages = _passages_from_chunks(corpus_chunks or [], all_signals)
+    all_rules = strong_rules + weak_rules
+    passages = _passages_from_chunks(corpus_chunks or [], all_signals, all_rules)
     if not passages:
-        passages = _passages_from_text(paper_text, all_signals)
+        passages = _passages_from_text(paper_text, all_signals, all_rules)
     reference_check = _reference_check(paper_text, contribution, owner_name_variants)
     candidate = bool(
         passages and not exclusions and not reference_check["canonical_citation_found"]
-        and (strong or len(weak) >= 2)
+        and (strong or strong_rules or len(weak) + len(weak_rules) >= 2)
     )
     return {
         "paper_id": paper_id,
@@ -155,6 +192,8 @@ def build_evidence_packet(
         "matched_signals": strong + weak,
         "matched_strong_signals": strong,
         "matched_weak_signals": weak,
+        "matched_rules": [rule["name"] for rule in all_rules],
+        "matched_strong_rules": [rule["name"] for rule in strong_rules],
         "matched_exclusions": exclusions,
         "candidate": candidate,
         "passages": passages,

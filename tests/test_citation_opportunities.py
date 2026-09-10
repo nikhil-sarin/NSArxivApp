@@ -91,6 +91,28 @@ class CitationOpportunityTests(unittest.TestCase):
         )
         self.assertEqual(rejected["classification"], "insufficient_evidence")
 
+    def test_judgement_receives_curated_contribution_claims(self):
+        captured = {}
+        response = json.dumps({
+            "classification": "potentially_useful", "confidence": 0.7,
+            "rationale": "The method is relevant.", "counterargument": "It may not be needed.",
+            "evidence_locators": ["Methods / page 3"],
+        })
+        contribution = {**CONTRIBUTION, "key_claims": ["A specific methodological limitation."]}
+
+        def complete(system, user):
+            captured["payload"] = json.loads(user)
+            return response
+
+        citation_opportunities.judge(
+            PACKET, contribution, catalogue_version="1.2", complete=complete,
+            provider="openai", model_name="test",
+        )
+        self.assertEqual(
+            captured["payload"]["contribution"]["key_claims"],
+            ["A specific methodological limitation."],
+        )
+
     def test_malformed_or_unsupported_model_output_is_insufficient(self):
         malformed = citation_opportunities.judge(
             PACKET, CONTRIBUTION, catalogue_version="1.0", complete=lambda s, u: "not json",

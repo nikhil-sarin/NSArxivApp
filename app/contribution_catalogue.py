@@ -42,6 +42,12 @@ def _validate_entry(entry: dict, seen: set[str]) -> dict:
     aliases = [normalize(alias) for alias in entry.get("aliases", []) if normalize(alias)]
     if len(aliases) != len(set(aliases)):
         raise CatalogueError(f"{prefix}: aliases must be unique after normalization")
+    for rule in entry.get("discovery_rules", []):
+        groups = rule.get("all", [])
+        if rule.get("strength") not in {"strong", "weak"} or not str(rule.get("name", "")).strip():
+            raise CatalogueError(f"{prefix}: discovery rule requires a name and strong/weak strength")
+        if len(groups) < 2 or any(not isinstance(group, list) or not any(normalize(term) for term in group) for group in groups):
+            raise CatalogueError(f"{prefix}: discovery rule requires at least two non-empty term groups")
     return {**entry, "aliases": aliases}
 
 

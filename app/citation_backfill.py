@@ -92,11 +92,65 @@ def run(*, days: int, max_papers: int, force: bool = False) -> dict:
     return totals
 
 
+def run_ids(arxiv_ids: list[str], *, force: bool = False) -> dict:
+    """Fetch, store, and evaluate an explicit set of ArXiv papers."""
+    client = ArxivClient()
+    extractor = PDFExtractor()
+    totals = {
+        "papers_selected": len(arxiv_ids),
+        "papers_processed": 0,
+        "papers_failed": 0,
+        "contributions_checked": 0,
+        "model_judgements": 0,
+        "reviewable": 0,
+    }
+    for index, raw_id in enumerate(arxiv_ids, start=1):
+        paper_id = raw_id.rstrip("/").split("/")[-1].removesuffix(".pdf").split("v")[0]
+        try:
+            result = client.get_result_by_id(paper_id)
+            metadata = client.get_paper_metadata(result)
+            paper_id = metadata["arxiv_id"]
+            text = get_paper_text(
+                paper_id,
+                client,
+                extractor,
+                result=result,
+                title=metadata.get("title"),
+                pdf_url=metadata.get("pdf_url"),
+                cache_dir=Path("data/papers"),
+            )
+            if not paper_store.paper_exists(paper_id):
+                paper_store.save_paper(paper_id, metadata, metadata.get("abstract", ""))
+            result_summary = citation_discovery.discover_paper(metadata, text, force=force)
+        except Exception as exc:
+            totals["papers_failed"] += 1
+            print(f"[{index}/{len(arxiv_ids)}] {paper_id}: failed: {exc}", flush=True)
+            continue
+        totals["papers_processed"] += 1
+        totals["contributions_checked"] += result_summary["checked"]
+        totals["model_judgements"] += result_summary["model_judgements"]
+        totals["reviewable"] += result_summary["reviewable"]
+        print(
+            f"[{index}/{len(arxiv_ids)}] {paper_id}: checked={result_summary['checked']} "
+            f"judged={result_summary['model_judgements']} reviewable={result_summary['reviewable']}",
+            flush=True,
+        )
+    return totals
+
+
 if __name__ == "__main__":
     load_dotenv()
     parser = argparse.ArgumentParser(description="Backfill evidence-first citation discovery")
     parser.add_argument("--days", type=int, default=90)
     parser.add_argument("--max-papers", type=int, default=100)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--arxiv-ids", nargs="*", default=[],
+        help="Fetch and check explicit ArXiv IDs or URLs instead of scanning the stored library.",
+    )
     args = parser.parse_args()
-    print(json.dumps(run(days=args.days, max_papers=args.max_papers, force=args.force), sort_keys=True))
+    if args.arxiv_ids:
+        totals = run_ids(args.arxiv_ids, force=args.force)
+    else:
+        totals = run(days=args.days, max_papers=args.max_papers, force=args.force)
+    print(json.dumps(totals, sort_keys=True))

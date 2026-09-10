@@ -1,6 +1,8 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
+from app import citation_backfill
 from app.citation_backfill import eligible_papers
 
 
@@ -16,6 +18,34 @@ class CitationBackfillTests(unittest.TestCase):
         selected = eligible_papers(papers, owner="Nikhil Sarin", days=90, limit=10, now=now)
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["arxiv_id"], "2609.1v1")
+
+    @mock.patch("app.citation_backfill.citation_discovery.discover_paper")
+    @mock.patch("app.citation_backfill.get_paper_text", return_value="Full public paper")
+    @mock.patch("app.citation_backfill.paper_store.save_paper")
+    @mock.patch("app.citation_backfill.paper_store.paper_exists", return_value=False)
+    @mock.patch("app.citation_backfill.PDFExtractor")
+    @mock.patch("app.citation_backfill.ArxivClient")
+    def test_explicit_ids_are_fetched_stored_and_checked(
+        self, client_class, extractor_class, paper_exists, save_paper, get_text, discover
+    ):
+        client = client_class.return_value
+        result = mock.Mock()
+        client.get_result_by_id.return_value = result
+        client.get_paper_metadata.return_value = {
+            "arxiv_id": "2609.08324", "title": "A paper", "abstract": "Abstract",
+            "authors": ["Other"], "published": datetime.now(timezone.utc).isoformat(),
+        }
+        discover.return_value = {
+            "checked": 22, "model_judgements": 1, "reviewable": 1,
+        }
+
+        totals = citation_backfill.run_ids(["https://arxiv.org/abs/2609.08324"])
+
+        client.get_result_by_id.assert_called_once_with("2609.08324")
+        save_paper.assert_called_once()
+        discover.assert_called_once()
+        self.assertEqual(totals["papers_processed"], 1)
+        self.assertEqual(totals["reviewable"], 1)
 
 
 if __name__ == "__main__":

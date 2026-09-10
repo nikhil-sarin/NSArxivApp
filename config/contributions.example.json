@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "owner": "Nikhil Sarin",
   "owner_name_variants": ["N. Sarin", "N Sarin", "Nikhil Sarin"],
   "contributions": [
@@ -18,6 +18,19 @@
       "aliases": ["redback", "redback software", "redback package"],
       "strong_signals": ["bilby transient light curve inference", "bayesian electromagnetic transient modelling", "simulate and fit electromagnetic transients"],
       "weak_signals": ["transient parameter inference", "magnetar powered transient modelling", "kilonova light curve modelling"],
+      "discovery_rules": [{
+        "name": "Bilby used directly for electromagnetic-transient inference",
+        "strength": "strong",
+        "all": [
+          ["bilby"],
+          ["bayesian inference", "parameter inference", "fitting", "fit", "dynesty"],
+          ["transient", "light curve", "radio", "optical", "supernova", "tidal disruption"]
+        ]
+      }],
+      "key_claims": [
+        "Redback is an electromagnetic-transient inference and simulation framework built on Bilby.",
+        "A paper using Bilby directly for electromagnetic-transient fitting may benefit from Redback's domain models, likelihoods, and reproducible workflow; this does not apply to gravitational-wave-only inference."
+      ],
       "exclusions": ["bilby gravitational wave inference"],
       "public_url": "https://github.com/nikhil-sarin/redback",
       "contact_framing": "Offer Redback as potentially relevant software and invite discussion; never imply misconduct."
@@ -35,6 +48,27 @@
       "aliases": ["snmix", "nickel mixing signatures", "neutron rich ejecta signatures"],
       "strong_signals": ["nickel mixing supernova lightcurve inference", "multi-shell radioactive supernova lightcurve model", "r-process ejecta collapsar lightcurves"],
       "weak_signals": ["radioactive material distribution supernova lightcurves", "one-zone radioactive decay bias", "neutron-rich ejecta photometric signatures"],
+      "discovery_rules": [{
+        "name": "Nickel distribution or mixing is assumed or inferred in a supernova",
+        "strength": "strong",
+        "all": [
+          ["56 ni", "nickel"],
+          ["mixing", "mixed", "distribution", "stratification"],
+          ["supernova", "ejecta", "light curve", "hydrodynamical"]
+        ]
+      }, {
+        "name": "Large-scale mixing and neutron-rich ejecta are interpreted together",
+        "strength": "strong",
+        "all": [
+          ["mixing", "mixed", "stratification"],
+          ["neutron rich", "stable iron", "58 ni", "54 fe"],
+          ["ejecta", "core", "shell", "abundance"]
+        ]
+      }],
+      "key_claims": [
+        "The spatial distribution and mixing of radioactive nickel can materially change supernova light curves and inferred physical parameters.",
+        "Fixed, one-zone, or assumed mixing prescriptions should be compared against models that permit distributed radioactive and neutron-rich ejecta."
+      ],
       "exclusions": ["spectroscopic abundance analysis without lightcurve modelling"],
       "public_url": "https://arxiv.org/abs/2606.23780",
       "contact_framing": "Share the directly relevant mixing or neutron-rich-ejecta result without implying that citation is obligatory."
@@ -52,6 +86,27 @@
       "aliases": ["redback-csm", "generalised csm interaction framework"],
       "strong_signals": ["thin shell arbitrary circumstellar density profile", "inference of time variable mass loss history", "interaction-powered transient lightcurve inference"],
       "weak_signals": ["circumstellar interaction light curve modelling", "multi-shell circumstellar medium modelling", "eruptive mass loss lightcurve"],
+      "discovery_rules": [{
+        "name": "CSM interaction light curve uses a structured density profile",
+        "strength": "strong",
+        "all": [
+          ["csm", "circumstellar"],
+          ["interaction"],
+          ["light curve", "density profile", "mass loss history", "semi analytic"]
+        ]
+      }, {
+        "name": "Mass-loss history is reconstructed from CSM radius using a wind assumption",
+        "strength": "strong",
+        "all": [
+          ["mass loss history", "terminal mass loss", "eruptive mass loss"],
+          ["wind velocity", "lookback time", "density profile", "csm"]
+        ]
+      }],
+      "key_claims": [
+        "The framework maps arbitrary CSM density profiles and multiple shells into interaction-powered light curves and mass-loss histories.",
+        "Converting CSM radius directly to lookback time with a fixed wind velocity can be physically misleading for eruptive, binary-driven, or otherwise non-steady mass loss.",
+        "Redback and redback-csm can be used to simulate and infer these generalized CSM configurations."
+      ],
       "exclusions": ["hydrodynamical simulation without light curve inference"],
       "public_url": "https://github.com/nikhil-sarin/redback-csm",
       "contact_framing": "Offer the published CSM framework as a directly relevant comparison or modelling tool."
