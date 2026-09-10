@@ -119,8 +119,13 @@ def run_ids(arxiv_ids: list[str], *, force: bool = False) -> dict:
                 pdf_url=metadata.get("pdf_url"),
                 cache_dir=Path("data/papers"),
             )
-            if not paper_store.paper_exists(paper_id):
-                paper_store.save_paper(paper_id, metadata, metadata.get("abstract", ""))
+            existing = paper_store.get_paper(paper_id)
+            summary = (
+                str(existing.get("summary", ""))
+                if existing
+                else str(metadata.get("abstract", ""))
+            )
+            paper_store.save_paper(paper_id, metadata, summary)
             result_summary = citation_discovery.discover_paper(metadata, text, force=force)
         except Exception as exc:
             totals["papers_failed"] += 1
