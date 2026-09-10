@@ -104,13 +104,13 @@ def has_analysis(paper_id: str, contribution_id: str, analysis_version: str, cat
         db.close()
 
 
-def delete_analysis(paper_id: str, contribution_id: str, analysis_version: str, catalogue_version: str) -> None:
-    """Remove a stale result when forced reevaluation no longer yields a candidate."""
+def delete_unreviewed_analyses(paper_id: str, contribution_id: str) -> None:
+    """Replace stale proposed results while preserving confirmed/exported decisions."""
     with research_db.transaction() as db:
         db.execute(
             "DELETE FROM citation_opportunities WHERE paper_id=? AND contribution_id=? "
-            "AND analysis_version=? AND catalogue_version=?",
-            (paper_id, contribution_id, analysis_version, catalogue_version),
+            "AND status IN ('proposed', 'needs_review')",
+            (paper_id, contribution_id),
         )
 
 
