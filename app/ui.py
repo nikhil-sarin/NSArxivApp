@@ -45,6 +45,7 @@ from app import index_jobs
 from app import synthesis
 from app import trends
 from app import citation_opportunities
+from app import citation_contacts
 from app import citation_opportunity_store
 from app import contribution_catalogue
 from app import citation_discovery
@@ -2994,6 +2995,17 @@ def render_research_ops():
 def render_citation_opportunities():
     """Render the automatically populated evidence-review and export queue."""
     st.header("Citation Opportunities")
+    orchestrator_endpoint = os.getenv(
+        "LOCAL_ORCHESTRATOR_URL", "http://127.0.0.1:8775/v1/import-bundles"
+    )
+    orchestrator_ui = os.getenv(
+        "LOCAL_ORCHESTRATOR_UI_URL", orchestrator_endpoint.split("/v1/", 1)[0]
+    )
+    st.info(
+        "Review the scientific match here. If it is worth contacting the authors, "
+        "send it to Email drafts; LocalOrchestrator will prepare editable text and never send it."
+    )
+    st.link_button("Open Email drafts →", orchestrator_ui)
     try:
         catalogue = contribution_catalogue.load()
     except contribution_catalogue.CatalogueError as exc:
@@ -3045,7 +3057,7 @@ def render_citation_opportunities():
     ]
     view = st.radio(
         "View",
-        ["Strong matches", "All reviewable", "Confirmed and exported"],
+        ["Strong matches", "All reviewable", "Sent to Email drafts"],
         horizontal=True,
         key="citation_opportunity_view",
     )
@@ -3093,23 +3105,57 @@ def render_citation_opportunities():
             st.markdown(f"**Strongest counterargument:** {opportunity['counterargument']}")
             with st.expander("Reference check"):
                 st.json(opportunity["reference_check"])
-            tone_note = st.text_input("Optional tone note", key=f"citation_tone_{opportunity['opportunity_id']}")
+            contact = source_paper.get("corresponding_author")
+            if isinstance(contact, dict) and contact.get("email"):
+                st.success(
+                    f"Public corresponding-author contact: {contact.get('name', 'Corresponding author')} "
+                    f"({contact['email']})"
+                )
+            else:
+                st.caption("A public corresponding-author email will be looked up from the arXiv source when you continue.")
+            tone_note = st.text_input(
+                "Optional drafting note",
+                placeholder="For example: keep it brief; mention that I also develop Bilby",
+                key=f"citation_tone_{opportunity['opportunity_id']}",
+            )
             confirm_col, reject_col, review_col = st.columns(3)
-            can_export = opportunity["classification"] in {"strong_citation_opportunity", "potentially_useful"}
+            can_export = (
+                opportunity["classification"] in {"strong_citation_opportunity", "potentially_useful"}
+                and opportunity["status"] in {"proposed", "needs_review"}
+            )
             if confirm_col.button(
-                "Confirm and propose draft",
+                "Send to Email drafts →",
                 key=f"confirm_citation_{opportunity['opportunity_id']}",
                 disabled=not can_export,
             ):
                 try:
+                    if not contact:
+                        with st.spinner("Looking for a public corresponding-author email in the arXiv source..."):
+                            try:
+                                contact = citation_contacts.find_public_contact(
+                                    _get_paper_text(opportunity["paper_id"], source_paper),
+                                    opportunity["paper_id"],
+                                )
+                            except Exception:
+                                contact = None
+                        if contact:
+                            source_paper = {**source_paper, "corresponding_author": contact}
+                            paper_store.update_paper(
+                                opportunity["paper_id"], {"corresponding_author": contact}
+                            )
                     citation_opportunity_store.update_status(opportunity["opportunity_id"], "confirmed")
                     confirmed = {**opportunity, "status": "confirmed"}
                     citation_opportunities.export_bundle(confirmed, source_paper, matched, tone_note=tone_note)
                 except Exception as exc:
                     st.error(str(exc))
                 else:
-                    st.success("Confirmed opportunity imported into LocalOrchestrator for separate approval.")
-                    st.rerun()
+                    contact_note = (
+                        f" Public contact found: {contact['name']} <{contact['email']}>."
+                        if contact else
+                        " No public email was found, so you can enter one manually later."
+                    )
+                    st.success(f"Added to Email drafts.{contact_note}")
+                    st.link_button("Continue in Email drafts →", orchestrator_ui)
             if reject_col.button("Not relevant", key=f"reject_citation_{opportunity['opportunity_id']}"):
                 citation_opportunity_store.update_status(opportunity["opportunity_id"], "not_relevant")
                 st.rerun()

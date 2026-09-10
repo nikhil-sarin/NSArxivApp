@@ -133,13 +133,20 @@ def build_import_bundle(opportunity: dict, paper: dict, contribution: dict, *, t
         raise ValueError("opportunity must be explicitly confirmed before export")
     paper_id = opportunity["paper_id"]
     citation = preferred_citation(contribution)
+    paper_context = {
+        "arxiv_id": paper_id, "title": paper.get("title", paper_id),
+        "url": f"https://arxiv.org/abs/{paper_id}", "authors": paper.get("authors", []),
+    }
+    contact = paper.get("corresponding_author")
+    if isinstance(contact, dict) and contact.get("name") and contact.get("email"):
+        paper_context["corresponding_author"] = {
+            "name": str(contact["name"]).strip(),
+            "email": str(contact["email"]).strip(),
+        }
     context = {
         "schema_version": "1.0", "catalogue_version": opportunity.get("catalogue_version", "1.0"),
         "opportunity_id": opportunity["opportunity_id"],
-        "paper": {
-            "arxiv_id": paper_id, "title": paper.get("title", paper_id),
-            "url": f"https://arxiv.org/abs/{paper_id}", "authors": paper.get("authors", []),
-        },
+        "paper": paper_context,
         "contribution": {
             "id": contribution["id"], "name": contribution["name"],
             "preferred_citation": citation.get("preferred_text") or citation.get("title", ""),

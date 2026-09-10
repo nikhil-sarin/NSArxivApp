@@ -136,7 +136,10 @@ class CitationOpportunityTests(unittest.TestCase):
             "classification": "potentially_useful", "confidence": 0.7, "rationale": "Relevant",
             "counterargument": "May not be needed", "evidence": PACKET["passages"], "status": "proposed",
         }
-        paper = {"title": "A paper", "authors": ["A. Author"]}
+        paper = {
+            "title": "A paper", "authors": ["A. Author"],
+            "corresponding_author": {"name": "A. Author", "email": "author@example.edu"},
+        }
         with self.assertRaises(ValueError):
             citation_opportunities.build_import_bundle(opportunity, paper, CONTRIBUTION)
         bundle = citation_opportunities.build_import_bundle({**opportunity, "status": "confirmed"}, paper, CONTRIBUTION)
@@ -144,6 +147,7 @@ class CitationOpportunityTests(unittest.TestCase):
         context = json.loads(bundle["candidates"][0]["context"])
         self.assertNotIn("full_text", context)
         self.assertEqual(context["paper"]["arxiv_id"], "2609.1")
+        self.assertEqual(context["paper"]["corresponding_author"]["email"], "author@example.edu")
         self.assertEqual(context["contribution"]["url"], "https://example.org/redback")
         self.assertEqual(context["evidence"][0]["quote"], PACKET["passages"][0]["quote"])
 
