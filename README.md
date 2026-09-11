@@ -223,6 +223,8 @@ python -m app.fetch_job \
 
 In `new-submissions` mode, `--max-results 0` ingests every announcement in the selected categories. The job starts from the requested UTC announcement day and automatically backs up to the latest non-empty announcement date, so weekend cron runs still pick up the newest ArXivSelaa-style batch.
 
+Every announcement is checked for citation opportunities, but only papers that meet the reading-interest threshold enter the Inbox and visible Library. Reading interest is compared semantically against the researcher profile, explicit tracking priorities, active paper/grant ideas, enabled contribution catalogue entries, and relevance feedback. Papers below `TRACKING_RELEVANCE_THRESHOLD` (default `45`) are retained as monitoring-only records so citation coverage is not reduced. Tracking priorities and exact-phrase exclusions can be edited under **Profile**.
+
 Keyword-search mode remains available:
 
 ```bash

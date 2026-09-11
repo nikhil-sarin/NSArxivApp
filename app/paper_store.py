@@ -166,6 +166,24 @@ def load_all_papers() -> List[Dict]:
     return list(_load().values())
 
 
+def load_reading_papers() -> List[Dict]:
+    """Return papers admitted to the reading workflow, excluding monitoring-only records."""
+    _migrate_legacy_if_needed()
+    db = research_db.connect()
+    try:
+        rows = db.execute(
+            """
+            SELECT p.data_json
+            FROM papers p JOIN triage t USING(paper_id)
+            WHERE t.status != 'irrelevant'
+            ORDER BY p.updated_at DESC
+            """
+        ).fetchall()
+        return [json.loads(row["data_json"]) for row in rows]
+    finally:
+        db.close()
+
+
 def rebuild_search_index() -> int:
     """Rebuild paper metadata, summary, abstract, and note FTS records."""
     papers = _load()
@@ -289,7 +307,7 @@ def load_triage(status: Optional[str] = "inbox", limit: int = 100) -> List[Dict]
 def search_by_author(author_query: str) -> List[Dict]:
     query = author_query.lower().strip()
     results = []
-    for paper in load_all_papers():
+    for paper in load_reading_papers():
         authors = paper.get("authors", [])
         if isinstance(authors, str):
             authors = [author.strip() for author in authors.split(",")]
@@ -305,7 +323,7 @@ def search_by_text(text_query: str) -> List[Dict]:
     except Exception:
         query = text_query.lower().strip()
         return [
-            paper for paper in load_all_papers()
+            paper for paper in load_reading_papers()
             if query in " ".join(
                 [
                     str(paper.get("title", "")),
@@ -315,6 +333,9 @@ def search_by_text(text_query: str) -> List[Dict]:
                 ]
             ).lower()
         ]
+    reading_ids = {
+        paper.get("arxiv_id") for paper in load_reading_papers()
+    }
     seen = set()
     papers = []
     for match in matches:
@@ -322,7 +343,7 @@ def search_by_text(text_query: str) -> List[Dict]:
         if not paper_id or paper_id in seen:
             continue
         paper = get_paper(paper_id)
-        if paper:
+        if paper and paper_id in reading_ids:
             papers.append(paper)
             seen.add(paper_id)
     return papers

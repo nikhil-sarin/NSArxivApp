@@ -63,6 +63,25 @@ class ResearchStoreTests(unittest.TestCase):
         self.assertEqual(stored["summary"], "Updated summary")
         self.assertEqual(stored["research_notes"]["cite_for"], "Opacity constraints")
 
+    def test_reading_library_excludes_monitoring_only_papers(self):
+        paper_store.save_paper(
+            "2601.00010",
+            {"arxiv_id": "2601.00010", "title": "Relevant transient"},
+            "Summary",
+        )
+        paper_store.save_paper(
+            "2601.00011",
+            {"arxiv_id": "2601.00011", "title": "Unrelated theory"},
+            "Summary",
+        )
+        paper_store.update_triage("2601.00011", status="irrelevant")
+
+        self.assertEqual(
+            [paper["arxiv_id"] for paper in paper_store.load_reading_papers()],
+            ["2601.00010"],
+        )
+        self.assertEqual(len(paper_store.load_all_papers()), 2)
+
     def test_notes_are_full_text_searchable(self):
         paper_store.save_paper(
             "2601.00003",

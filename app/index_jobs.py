@@ -32,7 +32,7 @@ def _run_index(job_id: str, services: dict, paper_ids: list[str] | None, force: 
     indexed = failed = chunks = 0
     errors = []
     try:
-        papers = paper_store.load_all_papers()
+        papers = paper_store.load_reading_papers()
         if paper_ids is not None:
             wanted = set(paper_ids)
             papers = [paper for paper in papers if paper.get("arxiv_id") in wanted]

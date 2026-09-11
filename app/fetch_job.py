@@ -6,6 +6,7 @@ Usage:
 """
 
 import argparse
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -21,6 +22,10 @@ from app.summarizer import PaperSummarizer
 from app.summary_workflow import summarize_with_fallback
 from app.vector_db import PaperVectorDB
 from app import citation_discovery
+from app import contribution_catalogue, idea_store, relevance, researcher_profile
+
+
+TRACKING_RELEVANCE_THRESHOLD = 45.0
 
 MAX_EMPTY_DATE_LOOKBACK_DAYS = 7
 
@@ -33,6 +38,25 @@ def _save_new_papers(
     summarizer: PaperSummarizer,
     vdb: PaperVectorDB,
 ) -> int:
+    all_triage = paper_store.load_triage(status=None, limit=10000)
+    positive = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == 1]
+    negative = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == -1]
+    ideas = idea_store.load_ideas("paper") + idea_store.load_ideas("grant")
+    contributions = [
+        item for item in contribution_catalogue.load()["contributions"]
+        if item.get("enabled", True)
+    ]
+    scored = relevance.score_tracking_papers(
+        papers,
+        profile=researcher_profile.load(),
+        ideas=ideas,
+        contributions=contributions,
+        positive_papers=positive,
+        negative_papers=negative,
+        encode=vdb.embedder.encode,
+    )
+    scores_by_id = {paper["arxiv_id"]: paper for paper in scored}
+    threshold = float(os.getenv("TRACKING_RELEVANCE_THRESHOLD", TRACKING_RELEVANCE_THRESHOLD))
     new_count = 0
     for metadata in papers:
         pid = metadata["arxiv_id"]
@@ -41,6 +65,14 @@ def _save_new_papers(
             continue
 
         print(f"  [new]  {pid}: {metadata['title'][:70]}")
+        tracking = scores_by_id.get(pid, {})
+        relevance_score = float(tracking.get("relevance_score", 100.0))
+        relevance_reason = str(tracking.get("relevance_reason", ""))
+        reading_candidate = relevance_score >= threshold
+        print(
+            f"  [tracking] {'inbox' if reading_candidate else 'monitor-only'} "
+            f"score={relevance_score:.1f}: {relevance_reason}"
+        )
         try:
             text = get_paper_text(
                 pid,
@@ -53,12 +85,24 @@ def _save_new_papers(
             print(f"  [warn] full text unavailable for {pid}: {exc}")
             text = ""
 
-        summary = summarize_with_fallback(summarizer, text, metadata.get("abstract", ""))
+        summary = (
+            summarize_with_fallback(summarizer, text, metadata.get("abstract", ""))
+            if reading_candidate
+            else (str(metadata.get("abstract", "")).strip() or text[:2000].strip())
+        )
         if not summary.strip():
             print(f"  [skip] {pid} had no readable full text or abstract.")
             continue
 
+        metadata["tracking_relevance_score"] = relevance_score
+        metadata["tracking_relevance_reason"] = relevance_reason
         paper_store.save_paper(pid, metadata, summary)
+        paper_store.update_triage(
+            pid,
+            status="inbox" if reading_candidate else "irrelevant",
+            relevance_score=relevance_score,
+            relevance_reason=relevance_reason,
+        )
         chroma_meta = {
             key: value for key, value in {
                 **metadata,
@@ -68,12 +112,13 @@ def _save_new_papers(
             }.items()
             if value is not None and not isinstance(value, list)
         }
-        vdb.add_paper(
-            paper_id=pid,
-            title=metadata["title"],
-            summary=summary,
-            metadata=chroma_meta,
-        )
+        if reading_candidate:
+            vdb.add_paper(
+                paper_id=pid,
+                title=metadata["title"],
+                summary=summary,
+                metadata=chroma_meta,
+            )
         if citation_discovery.enabled():
             try:
                 discovery = citation_discovery.discover_paper({**metadata, "summary": summary}, text)

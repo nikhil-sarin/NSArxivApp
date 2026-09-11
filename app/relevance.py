@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from typing import Callable
 
 
 _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{2,}")
@@ -78,5 +79,120 @@ def score_papers(
         item = dict(paper)
         item["relevance_score"] = round(raw * 100, 1)
         item["relevance_reason"] = explanation
+        scored.append(item)
+    return sorted(scored, key=lambda item: item["relevance_score"], reverse=True)
+
+
+def _cosine_vectors(left, right) -> float:
+    left_values = [float(value) for value in left]
+    right_values = [float(value) for value in right]
+    numerator = sum(a * b for a, b in zip(left_values, right_values))
+    left_norm = math.sqrt(sum(value * value for value in left_values))
+    right_norm = math.sqrt(sum(value * value for value in right_values))
+    return numerator / (left_norm * right_norm) if left_norm and right_norm else 0.0
+
+
+def _preference_documents(
+    profile: dict,
+    ideas: list[dict],
+    contributions: list[dict],
+    positive_papers: list[dict],
+) -> list[tuple[str, str]]:
+    documents: list[tuple[str, str]] = []
+    tracking = str(profile.get("tracking_preferences", "")).strip()
+    if tracking:
+        for line in re.split(r"[\n;]+", tracking):
+            if line.strip():
+                documents.append(("tracking priorities", line.strip()))
+    profile_text = " ".join(
+        str(profile.get(key, ""))
+        for key in ("research_areas", "methods_and_tools", "bio")
+    ).strip()
+    if profile_text:
+        documents.append(("research profile", profile_text))
+    for idea in ideas:
+        if idea.get("status", "draft") != "archived":
+            text = " ".join(
+                str(idea.get(key, "")) for key in ("title", "description", "notes")
+            ).strip()
+            if text:
+                documents.append((f"active idea: {idea.get('title', 'untitled')}", text))
+    for contribution in contributions:
+        text = " ".join(
+            [
+                str(contribution.get("name", "")),
+                *[str(value) for value in contribution.get("key_claims", [])],
+                *[str(value) for value in contribution.get("strong_signals", [])],
+            ]
+        ).strip()
+        if text:
+            documents.append((f"your work: {contribution.get('name', contribution.get('id', ''))}", text))
+    for paper in positive_papers:
+        documents.append((f"positive feedback: {paper.get('title', paper.get('arxiv_id', 'paper'))}", _paper_text(paper)))
+    return documents
+
+
+def score_tracking_papers(
+    papers: list[dict],
+    *,
+    profile: dict,
+    ideas: list[dict],
+    contributions: list[dict],
+    positive_papers: list[dict] | None = None,
+    negative_papers: list[dict] | None = None,
+    encode: Callable[[str], object],
+) -> list[dict]:
+    """Score reading interest semantically while retaining explainable provenance."""
+    preferences = _preference_documents(
+        profile,
+        ideas,
+        contributions,
+        positive_papers or [],
+    )
+    preference_vectors = [(label, encode(text)) for label, text in preferences]
+    negative_vectors = [encode(_paper_text(paper)) for paper in (negative_papers or [])]
+    exclusions = [
+        normalize
+        for line in str(profile.get("tracking_exclusions", "")).splitlines()
+        if (normalize := " ".join(_tokens(line)))
+    ]
+
+    scored = []
+    for paper in papers:
+        paper_text = _paper_text(paper)
+        normalized_paper = " ".join(_tokens(paper_text))
+        if not preference_vectors:
+            item = dict(paper)
+            item["relevance_score"] = 100.0
+            item["relevance_reason"] = "No tracking preferences configured; admitted by default"
+            scored.append(item)
+            continue
+        vector = encode(paper_text)
+        similarities = [
+            (_cosine_vectors(vector, preference_vector), label)
+            for label, preference_vector in preference_vectors
+        ]
+        best_score, best_label = max(similarities, default=(0.0, "no configured preferences"))
+        negative_score = max(
+            (_cosine_vectors(vector, negative_vector) for negative_vector in negative_vectors),
+            default=0.0,
+        )
+        adjusted = max(0.0, min(1.0, best_score - 0.25 * negative_score))
+        excluded = next(
+            (phrase for phrase in exclusions if phrase and phrase in normalized_paper),
+            "",
+        )
+        if excluded:
+            adjusted = 0.0
+            reason = f"Excluded by tracking preference: {excluded}"
+        elif best_score:
+            reason = f"Closest match: {best_label} ({best_score:.0%} semantic similarity)"
+            if negative_score:
+                reason += f"; negative-feedback similarity {negative_score:.0%}"
+        else:
+            reason = "No tracking preferences are configured"
+        item = dict(paper)
+        item["relevance_score"] = round(adjusted * 100, 1)
+        item["relevance_reason"] = reason
         scored.append(item)
     return sorted(scored, key=lambda item: item["relevance_score"], reverse=True)

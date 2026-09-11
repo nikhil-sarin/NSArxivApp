@@ -15,6 +15,8 @@ DEFAULT_PROFILE = {
     "research_areas": "",
     "methods_and_tools": "",
     "bio": "",
+    "tracking_preferences": "",
+    "tracking_exclusions": "",
 }
 
 
@@ -64,4 +66,8 @@ def to_context_string(profile: Dict) -> str:
         lines.append(f"Methods & tools: {profile['methods_and_tools']}")
     if profile.get("bio"):
         lines.append(f"Bio: {profile['bio']}")
+    if profile.get("tracking_preferences"):
+        lines.append(f"Paper tracking priorities: {profile['tracking_preferences']}")
+    if profile.get("tracking_exclusions"):
+        lines.append(f"Paper tracking exclusions: {profile['tracking_exclusions']}")
     return "\n".join(lines)

@@ -82,7 +82,7 @@ def _session_vector_db() -> PaperVectorDB:
 
 def _reload_papers_from_store() -> None:
     """Reload persisted papers into session state."""
-    stored = paper_store.load_all_papers()
+    stored = paper_store.load_reading_papers()
     st.session_state.papers = stored
     st.session_state.papers_store_mtime_ns = (
         paper_store.STORE_PATH.stat().st_mtime_ns if paper_store.STORE_PATH.exists() else None
@@ -125,7 +125,7 @@ def _latest_fetch_block(log_path: Path) -> str:
 
 
 def _recent_stored_papers(limit: int = 5) -> list[Dict]:
-    papers = paper_store.load_all_papers()
+    papers = paper_store.load_reading_papers()
     return sorted(papers, key=_published_sort_key, reverse=True)[:limit]
 
 
@@ -391,7 +391,7 @@ def render_paper_notes(pid: str):
                     "follow_up": follow_up,
                 },
             )
-            st.session_state.papers = paper_store.load_all_papers()
+            st.session_state.papers = paper_store.load_reading_papers()
             st.success("Notes saved.")
 
     with st.expander("Import handwritten note", expanded=False):
@@ -746,7 +746,7 @@ def render_search_results(query: str, author: str, categories: List[str], max_re
 def render_multi_paper_chat():
     """Chat across multiple selected papers simultaneously."""
     st.markdown("### Multi-paper chat")
-    all_papers = paper_store.load_all_papers()
+    all_papers = paper_store.load_reading_papers()
     if not all_papers:
         st.info("No papers in your library yet.")
         return
@@ -857,16 +857,23 @@ def _rescore_inbox() -> int:
     all_triage = paper_store.load_triage(status=None, limit=5000)
     positive = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == 1]
     negative = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == -1]
-    interest_text = relevance.build_interest_text(researcher_profile.load(), _all_saved_ideas())
-    scored = relevance.score_papers(
+    scored = relevance.score_tracking_papers(
         inbox,
-        interest_text=interest_text,
+        profile=researcher_profile.load(),
+        ideas=_all_saved_ideas(),
+        contributions=[
+            item for item in contribution_catalogue.load()["contributions"]
+            if item.get("enabled", True)
+        ],
         positive_papers=positive,
         negative_papers=negative,
+        encode=_session_vector_db().embedder.encode,
     )
+    threshold = float(os.getenv("TRACKING_RELEVANCE_THRESHOLD", "45"))
     for paper in scored:
         paper_store.update_triage(
             paper.get("arxiv_id", ""),
+            status="inbox" if paper["relevance_score"] >= threshold else "irrelevant",
             relevance_score=paper["relevance_score"],
             relevance_reason=paper["relevance_reason"],
         )
@@ -924,7 +931,7 @@ def render_inbox():
 
 def render_knowledge_graph():
     st.header("Knowledge Graph")
-    papers = paper_store.load_all_papers()
+    papers = paper_store.load_reading_papers()
     if len(papers) < 2:
         st.info("Add more papers to see connections.")
         return
@@ -1285,16 +1292,16 @@ def render_papers_list():
     detailed_all = mode_col.checkbox("Detailed mode", key="regen_detailed_all")
     if btn_col1.button("Regenerate all"):
         progress = st.progress(0, text="Regenerating summaries...")
-        all_papers = paper_store.load_all_papers()
+        all_papers = paper_store.load_reading_papers()
         for i, p in enumerate(all_papers):
             progress.progress((i + 1) / len(all_papers), text=f"Summarizing {i+1}/{len(all_papers)}: {p.get('title','')[:50]}...")
             _regenerate_summary(p, detailed=detailed_all)
         progress.empty()
-        st.session_state.papers = paper_store.load_all_papers()
+        st.session_state.papers = paper_store.load_reading_papers()
         st.success("All summaries regenerated.")
         st.rerun()
     if btn_col2.button("Fill missing"):
-        missing = [p for p in paper_store.load_all_papers() if not p.get("summary", "").strip()]
+        missing = [p for p in paper_store.load_reading_papers() if not p.get("summary", "").strip()]
         if not missing:
             st.info("No missing summaries.")
         else:
@@ -1303,20 +1310,20 @@ def render_papers_list():
                 progress.progress((i + 1) / len(missing), text=f"Summarizing {i+1}/{len(missing)}: {p.get('title','')[:50]}...")
                 _regenerate_summary(p, detailed=detailed_all)
             progress.empty()
-            st.session_state.papers = paper_store.load_all_papers()
+            st.session_state.papers = paper_store.load_reading_papers()
             st.success(f"Filled {len(missing)} missing summaries.")
             st.rerun()
     if btn_col3.button("Refresh"):
-        st.session_state.papers = paper_store.load_all_papers()
+        st.session_state.papers = paper_store.load_reading_papers()
         st.rerun()
     if btn_col4.button("Repair incomplete"):
-        incomplete = [p for p in paper_store.load_all_papers() if completeness_issues(p.get("summary", ""))]
+        incomplete = [p for p in paper_store.load_reading_papers() if completeness_issues(p.get("summary", ""))]
         progress = st.progress(0, text="Repairing incomplete summaries...")
         for i, paper in enumerate(incomplete, start=1):
             progress.progress(i / max(len(incomplete), 1), text=f"Repairing {i}/{len(incomplete)}")
             _regenerate_summary(paper, detailed=True)
         progress.empty()
-        st.session_state.papers = paper_store.load_all_papers()
+        st.session_state.papers = paper_store.load_reading_papers()
         st.success(f"Rebuilt {len(incomplete)} summaries from full text.")
         st.rerun()
 
@@ -1401,7 +1408,7 @@ def render_papers_list():
                         new_summary = _regenerate_summary(paper, detailed=detailed)
                     if new_summary:
                         st.session_state.live_summaries[pid] = new_summary
-                        st.session_state.papers = paper_store.load_all_papers()
+                        st.session_state.papers = paper_store.load_reading_papers()
                         st.success("Done. Summary updated.")
                         st.rerun()
                 show_chat_key = f"show_chat_{pid}"
@@ -1648,7 +1655,7 @@ def render_schedule():
                 with st.spinner("Running fetch job..."):
                     ok, output = _run_fetch_command(fetch_cmd, log_path)
                 if ok:
-                    st.session_state.papers = paper_store.load_all_papers()
+                    st.session_state.papers = paper_store.load_reading_papers()
                     st.success("Fetch completed and library reloaded.")
                 else:
                     st.error("Fetch failed.")
@@ -1754,7 +1761,7 @@ def _retrieved_library_context(query: str, *, paper_ids: list[str] | None = None
 
 def render_lit_review_builder():
     st.header("Literature Review Builder")
-    papers = paper_store.load_all_papers()
+    papers = paper_store.load_reading_papers()
     if not papers:
         st.info("Your library is empty. Search for papers first.")
         return
@@ -1869,7 +1876,7 @@ def render_assistant():
         "Chat with your entire library, generate a research briefing, or find gaps and open questions."
     )
 
-    papers = paper_store.load_all_papers()
+    papers = paper_store.load_reading_papers()
     if not papers:
         st.info("Your library is empty. Search for papers first.")
         return
@@ -2161,7 +2168,7 @@ def render_profile():
     profile = researcher_profile.load()
 
     # Auto-generate from library
-    papers = paper_store.load_all_papers()
+    papers = paper_store.load_reading_papers()
     gen_col, _ = st.columns([1, 3])
     if gen_col.button("Auto-generate from library", type="primary", disabled=len(papers) == 0):
         if not papers:
@@ -2226,6 +2233,21 @@ def render_profile():
             placeholder="A short description of your research focus...",
             height=100,
         )
+        profile["tracking_preferences"] = st.text_area(
+            "Paper tracking priorities",
+            value=profile.get("tracking_preferences", ""),
+            placeholder=(
+                "One topic per line, for example: transient light-curve inference; "
+                "eruptive pre-supernova mass loss"
+            ),
+            height=100,
+        )
+        profile["tracking_exclusions"] = st.text_area(
+            "Paper tracking exclusions",
+            value=profile.get("tracking_exclusions", ""),
+            placeholder="Exact phrases to keep out of the reading inbox, one per line",
+            height=80,
+        )
         if st.form_submit_button("Save profile", type="primary"):
             researcher_profile.save(profile)
             st.success("Profile saved.")
@@ -2252,7 +2274,7 @@ def _idea_workspace(idea_type: str, idea: Dict):
         f"Description: {idea['description']}\n"
     )
 
-    all_papers = paper_store.load_all_papers()
+    all_papers = paper_store.load_reading_papers()
     paper_by_id = {p.get("arxiv_id", p.get("id", "")): p for p in all_papers if p.get("arxiv_id", p.get("id", ""))}
     label_by_id = {pid: _paper_label(paper) for pid, paper in paper_by_id.items()}
     paper_by_label = {label: paper_by_id[pid] for pid, label in label_by_id.items()}
@@ -2799,7 +2821,7 @@ def render_projects():
                 st.success("Meeting notes saved and indexed.")
 
     with papers_tab:
-        all_papers = paper_store.load_all_papers()
+        all_papers = paper_store.load_reading_papers()
         paper_options = {_paper_label(paper): paper for paper in all_papers}
         current_ids = set(project_store.linked_paper_ids(project_id))
         defaults = [label for label, paper in paper_options.items() if paper.get("arxiv_id") in current_ids]
@@ -2833,7 +2855,7 @@ def render_projects():
         if st.button("Generate weekly project briefing", type="primary", key=f"project_briefing_{project_id}"):
             snapshots = project_store.latest_snapshots(project_id, limit=6)
             linked_ids = project_store.linked_paper_ids(project_id)
-            linked = [paper for paper in paper_store.load_all_papers() if paper.get("arxiv_id") in linked_ids]
+            linked = [paper for paper in paper_store.load_reading_papers() if paper.get("arxiv_id") in linked_ids]
             system = (
                 "You are preparing a private weekly research-project briefing. Distinguish repository/Notion changes "
                 "from literature evidence and do not invent progress.\n\n"
@@ -2908,7 +2930,7 @@ def render_research_ops():
 
     with trends_tab:
         window = st.slider("Recent window (days)", 30, 365, 90, 30)
-        rows = trends.emerging_themes(paper_store.load_all_papers(), recent_days=window)
+        rows = trends.emerging_themes(paper_store.load_reading_papers(), recent_days=window)
         if rows:
             trend_rows = [{
                 "theme": row["theme"],
