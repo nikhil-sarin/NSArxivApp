@@ -44,6 +44,7 @@ from app import index_jobs
 from app import synthesis
 from app import trends
 from app import citation_opportunities
+from app import citation_evidence
 from app import citation_contacts
 from app import citation_opportunity_store
 from app import contribution_catalogue
@@ -3127,6 +3128,108 @@ def render_citation_opportunities():
 
     by_id = {item["id"]: item for item in catalogue["contributions"]}
     papers_by_id = {paper.get("arxiv_id", ""): paper for paper in papers}
+
+    with st.expander("Create citation opportunity manually", expanded=False):
+        contribution_options = {
+            item.get("name", item["id"]): item for item in contributions
+        }
+        with st.form("manual_citation_opportunity"):
+            manual_arxiv = st.text_input(
+                "ArXiv ID or URL",
+                placeholder="2609.09520",
+            )
+            manual_contribution_label = st.selectbox(
+                "Your relevant work",
+                list(contribution_options),
+            )
+            manual_strength = st.selectbox(
+                "Match strength",
+                ["Potentially useful", "Strong citation opportunity"],
+            )
+            manual_confidence = st.slider(
+                "Confidence",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.8,
+                step=0.05,
+            )
+            manual_rationale = st.text_area(
+                "Scientific connection",
+                placeholder="Explain specifically how your work is relevant to this paper.",
+            )
+            manual_counterargument = st.text_area(
+                "Strongest counterargument",
+                value="The authors may have made a reasonable independent methodological choice.",
+            )
+            manual_locator = st.text_input(
+                "Evidence location",
+                placeholder="Methods, section 3, or page 7",
+            )
+            manual_quote = st.text_area(
+                "Evidence quote from the paper",
+                placeholder="Paste the exact supporting passage from the paper.",
+            )
+            create_manual_submitted = st.form_submit_button(
+                "Create opportunity",
+                type="primary",
+            )
+        if create_manual_submitted:
+            try:
+                canonical_id = citation_opportunities.arxiv_id_from_input(manual_arxiv)
+                if not canonical_id:
+                    raise ValueError("enter a valid modern arXiv ID or URL")
+                stored_id = paper_store.resolve_paper_id(canonical_id)
+                if not stored_id:
+                    raise ValueError("add the paper using the left sidebar first")
+                source_paper = paper_store.get_paper(stored_id) or {}
+                contribution = contribution_options[manual_contribution_label]
+                if citation_evidence.paper_is_already_published(source_paper):
+                    raise ValueError("the paper is already accepted or published")
+                if not citation_evidence.contribution_predates_paper(stored_id, contribution):
+                    raise ValueError("the selected work was not public before this paper")
+                with st.spinner("Validating evidence against the paper..."):
+                    paper_text = _get_paper_text(stored_id, source_paper)
+                evidence_source = "\n\n".join(
+                    part
+                    for part in (paper_text, str(source_paper.get("abstract", "")))
+                    if part.strip()
+                )
+                evidence_packet = citation_evidence.build_evidence_packet(
+                    stored_id,
+                    paper_text,
+                    contribution,
+                    owner_name_variants=catalogue.get(
+                        "owner_name_variants", [catalogue["owner"]]
+                    ),
+                    corpus_chunks=research_db.documents_for_owner(
+                        "paper_content", stored_id
+                    ),
+                )
+                citation_opportunities.create_manual(
+                    paper_id=stored_id,
+                    contribution=contribution,
+                    catalogue_version=catalogue["schema_version"],
+                    classification=(
+                        "strong_citation_opportunity"
+                        if manual_strength == "Strong citation opportunity"
+                        else "potentially_useful"
+                    ),
+                    confidence=manual_confidence,
+                    rationale=manual_rationale,
+                    counterargument=manual_counterargument,
+                    evidence_quote=manual_quote,
+                    evidence_locator=manual_locator,
+                    paper_text=evidence_source,
+                    reference_check=evidence_packet["reference_check"],
+                )
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"Could not create opportunity: {exc}")
+            else:
+                st.success("Manual citation opportunity created.")
+                st.rerun()
+
     paper_lookup = st.text_input(
         "Find a paper",
         placeholder="ArXiv ID, URL, or title",

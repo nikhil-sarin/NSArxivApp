@@ -46,6 +46,76 @@ class CitationOpportunityTests(unittest.TestCase):
         self.assertEqual(first["opportunity_id"], second["opportunity_id"])
         self.assertEqual(len(citation_opportunity_store.list_opportunities()), 1)
 
+    def test_manual_opportunity_requires_grounded_evidence(self):
+        result = citation_opportunities.create_manual(
+            paper_id="2609.09520",
+            contribution=CONTRIBUTION,
+            catalogue_version="1.2",
+            classification="potentially_useful",
+            confidence=0.9,
+            rationale="The mass-loss treatment is directly relevant.",
+            counterargument="The existing approximation may be sufficient.",
+            evidence_quote="We assume a steady wind density profile.",
+            evidence_locator="Methods, page 4",
+            paper_text="Methods\nWe assume a steady wind density profile.\nResults",
+            reference_check={"canonical_citation_found": False},
+        )
+
+        self.assertTrue(result["opportunity_id"].startswith("cop_manual_"))
+        self.assertEqual(result["model"]["provider"], "manual")
+        self.assertEqual(
+            citation_opportunity_store.list_actionable()[0]["opportunity_id"],
+            result["opportunity_id"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "not found"):
+            citation_opportunities.create_manual(
+                paper_id="2609.09520",
+                contribution=CONTRIBUTION,
+                catalogue_version="1.2",
+                classification="potentially_useful",
+                confidence=0.9,
+                rationale="Relevant connection.",
+                counterargument="May not be needed.",
+                evidence_quote="This sentence is fabricated.",
+                evidence_locator="Page 4",
+                paper_text="The real paper text.",
+                reference_check={"canonical_citation_found": False},
+            )
+
+    def test_manual_strong_opportunity_rejects_existing_citation(self):
+        with self.assertRaisesRegex(ValueError, "canonical citation"):
+            citation_opportunities.create_manual(
+                paper_id="2609.09520",
+                contribution=CONTRIBUTION,
+                catalogue_version="1.2",
+                classification="strong_citation_opportunity",
+                confidence=0.9,
+                rationale="Direct software connection.",
+                counterargument="The citation may be incidental.",
+                evidence_quote="We use Redback for transient inference.",
+                evidence_locator="Methods",
+                paper_text="We use Redback for transient inference.",
+                reference_check={"canonical_citation_found": True},
+            )
+
+    def test_manual_opportunity_rejects_overlong_evidence(self):
+        quote = "x" * (citation_opportunities.MAX_MANUAL_EVIDENCE_CHARS + 1)
+        with self.assertRaisesRegex(ValueError, "at most"):
+            citation_opportunities.create_manual(
+                paper_id="2609.09520",
+                contribution=CONTRIBUTION,
+                catalogue_version="1.2",
+                classification="potentially_useful",
+                confidence=0.9,
+                rationale="Relevant connection.",
+                counterargument="May not be needed.",
+                evidence_quote=quote,
+                evidence_locator="Methods",
+                paper_text=quote,
+                reference_check={"canonical_citation_found": False},
+            )
+
     def test_actionable_queue_is_not_crowded_out_by_newer_negative_results(self):
         base = {
             "analysis_version": "2", "catalogue_version": "1.0", "confidence": 0.5,

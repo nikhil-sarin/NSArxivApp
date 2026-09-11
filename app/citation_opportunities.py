@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -27,6 +28,78 @@ def arxiv_id_from_input(value: str) -> str | None:
 
 
 BANNED_LANGUAGE = {"citation theft", "misconduct", "should have known"}
+MAX_MANUAL_EVIDENCE_CHARS = 700
+
+
+def _normalized_evidence(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text)).strip().casefold()
+
+
+def create_manual(
+    *,
+    paper_id: str,
+    contribution: dict,
+    catalogue_version: str,
+    classification: str,
+    confidence: float,
+    rationale: str,
+    counterargument: str,
+    evidence_quote: str,
+    evidence_locator: str,
+    paper_text: str,
+    reference_check: dict,
+) -> dict:
+    """Create an evidence-grounded opportunity from an explicit user judgement."""
+    if not str(paper_id).strip() or not str(contribution.get("id", "")).strip():
+        raise ValueError("paper and contribution IDs are required")
+    if classification not in {"strong_citation_opportunity", "potentially_useful"}:
+        raise ValueError("manual opportunities must be strong or potentially useful")
+    if not 0 <= float(confidence) <= 1:
+        raise ValueError("confidence must be between 0 and 1")
+    rationale = rationale.strip()
+    counterargument = counterargument.strip()
+    evidence_quote = evidence_quote.strip()
+    evidence_locator = evidence_locator.strip() or "Manually supplied paper evidence"
+    if not rationale or not counterargument or not evidence_quote:
+        raise ValueError("rationale, counterargument, and paper evidence are required")
+    if len(evidence_quote) > MAX_MANUAL_EVIDENCE_CHARS:
+        raise ValueError(
+            f"paper evidence must be at most {MAX_MANUAL_EVIDENCE_CHARS} characters"
+        )
+    combined = f"{rationale} {counterargument}".casefold()
+    if any(term in combined for term in BANNED_LANGUAGE):
+        raise ValueError("accusatory language is not allowed")
+    if _normalized_evidence(evidence_quote) not in _normalized_evidence(paper_text):
+        raise ValueError("the evidence quote was not found in the paper text")
+    if (
+        reference_check.get("canonical_citation_found")
+        and classification == "strong_citation_opportunity"
+    ):
+        raise ValueError(
+            "a strong opportunity cannot be created when the canonical citation is present"
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+    result = {
+        "schema_version": "1.0",
+        "opportunity_id": f"cop_manual_{uuid.uuid4().hex[:20]}",
+        "paper_id": paper_id,
+        "contribution_id": contribution["id"],
+        "analysis_version": "manual-1",
+        "catalogue_version": catalogue_version,
+        "classification": classification,
+        "confidence": float(confidence),
+        "rationale": rationale,
+        "counterargument": counterargument,
+        "evidence": [{"locator": evidence_locator, "quote": evidence_quote}],
+        "reference_check": reference_check,
+        "model": {"provider": "manual", "name": "user", "prompt_version": "manual-1"},
+        "status": "proposed",
+        "created_at": now,
+        "updated_at": now,
+    }
+    citation_opportunity_store.save(result)
+    return result
 
 
 def _parse_model_json(raw: str) -> dict:
