@@ -24,7 +24,6 @@ from app.arxiv_client import ArxivClient
 from app.pdf_extractor import PDFExtractor
 from app.summarizer import PaperSummarizer
 from app.vector_db import PaperVectorDB
-from app.knowledge_graph import KnowledgeGraph
 from app import paper_store
 from app.paper_text import get_paper_text
 from app.report_generator import ReportUnavailable, generate_report
@@ -74,23 +73,20 @@ def get_pdf_extractor():
     return PDFExtractor()
 
 
+def _session_vector_db() -> PaperVectorDB:
+    """Initialize the embedding index only when a workflow actually needs it."""
+    if "vdb" not in st.session_state:
+        st.session_state.vdb = get_vector_db()
+    return st.session_state.vdb
+
+
 def _reload_papers_from_store() -> None:
-    """Reload persisted papers into session state and rebuild graph state."""
+    """Reload persisted papers into session state."""
     stored = paper_store.load_all_papers()
     st.session_state.papers = stored
     st.session_state.papers_store_mtime_ns = (
         paper_store.STORE_PATH.stat().st_mtime_ns if paper_store.STORE_PATH.exists() else None
     )
-
-    kg = KnowledgeGraph()
-    for paper in stored:
-        pid = paper.get("arxiv_id", paper.get("id", ""))
-        if not pid:
-            continue
-        kg.add_paper(pid, paper)
-        kg.connect_by_category(pid, paper.get("categories", []))
-        kg.connect_by_author(pid, paper.get("authors", []))
-    st.session_state.kg = kg
 
 
 def _sync_papers_from_store() -> None:
@@ -135,7 +131,6 @@ def _recent_stored_papers(limit: int = 5) -> list[Dict]:
 
 def init_session_state():
     """Initialize session state variables, loading persisted papers on first run."""
-    st.session_state.vdb = get_vector_db()
     st.session_state.summarizer = get_summarizer()
     st.session_state.arxiv = get_arxiv_client()
     st.session_state.pdf_extractor = get_pdf_extractor()
@@ -249,9 +244,8 @@ def render_sidebar():
     st.sidebar.caption(f"**Notes/projects:** {privacy.routing_label(private_provider, contains_private_data=True)}")
     with st.sidebar.expander("System health", expanded=False):
         health = research_db.health_snapshot()
-        vector_count = st.session_state.vdb.collection.count()
         st.caption(f"Database schema: v{health['schema_version']}")
-        st.caption(f"Papers: {health['papers']} | vector records: {vector_count}")
+        st.caption(f"Papers: {health['papers']}")
         st.caption(f"Search documents: {health['documents']} | inbox: {health['inbox']}")
         selected_policy = st.selectbox(
             "Data routing",
@@ -262,8 +256,6 @@ def render_sidebar():
         if selected_policy != privacy.active_policy() and st.button("Apply routing policy", use_container_width=True):
             privacy.set_policy(selected_policy)
             st.rerun()
-        if vector_count != health["papers"]:
-            st.warning(f"Vector index count differs from the library by {abs(health['papers'] - vector_count)} records.")
         if health["documents"] != health["fts_documents"]:
             st.error("Full-text index requires repair.")
         if st.button("Rebuild text index", key="rebuild_text_index", use_container_width=True):
@@ -435,7 +427,7 @@ def render_paper_notes(pid: str):
                         text=transcription,
                         paper_id=pid,
                         locator={"arxiv_id": pid, "filename": upload.name},
-                        vector_db=st.session_state.vdb,
+                        vector_db=_session_vector_db(),
                     )
                     st.success("Transcription saved and indexed.")
                     st.rerun()
@@ -512,7 +504,7 @@ def _render_report_controls(paper: Dict, pid: str, *, key_prefix: str):
                         reports_dir=_REPORTS_DIR,
                         sources_dir=sources_dir,
                         force=True,
-                        vector_db=st.session_state.vdb,
+                        vector_db=_session_vector_db(),
                     )
                 except ReportUnavailable as exc:
                     st.error(f"Could not generate a report for {pid}: {exc}")
@@ -532,7 +524,7 @@ def _render_report_controls(paper: Dict, pid: str, *, key_prefix: str):
                         pdf_extractor=st.session_state.pdf_extractor,
                         reports_dir=_REPORTS_DIR,
                         sources_dir=sources_dir,
-                        vector_db=st.session_state.vdb,
+                        vector_db=_session_vector_db(),
                     )
                 except ReportUnavailable as exc:
                     st.error(f"Could not generate a report for {pid}: {exc}")
@@ -556,7 +548,7 @@ def _render_report_controls(paper: Dict, pid: str, *, key_prefix: str):
 
 
 def _store_paper(pid: str, metadata: Dict, summary: str, paper_text: str = ""):
-    """Persist a paper to JSON store, vector DB, and knowledge graph."""
+    """Persist a paper, update its embedding, and queue citation discovery."""
     paper_store.save_paper(pid, metadata, summary)
 
     def _chroma_safe(v):
@@ -579,19 +571,16 @@ def _store_paper(pid: str, metadata: Dict, summary: str, paper_text: str = ""):
     }
     # Use upsert pattern: delete first if exists (for regeneration), then add
     try:
-        st.session_state.vdb.collection.delete(ids=[pid])
+        _session_vector_db().collection.delete(ids=[pid])
     except Exception:
         pass
-    st.session_state.vdb.add_paper(
+    _session_vector_db().add_paper(
         paper_id=pid,
         title=metadata["title"],
         summary=summary,
         metadata=chroma_meta,
     )
 
-    st.session_state.kg.add_paper(pid, metadata)
-    st.session_state.kg.connect_by_category(pid, metadata.get("categories", []))
-    st.session_state.kg.connect_by_author(pid, metadata.get("authors", []))
     citation_discovery.enqueue_paper({**metadata, "summary": summary}, paper_text)
 
 
@@ -840,7 +829,7 @@ def render_vector_search():
     )
     if semantic_query:
         with st.spinner("Searching..."):
-            results = retrieval.hybrid_search(semantic_query, vector_db=st.session_state.vdb, limit=15)
+            results = retrieval.hybrid_search(semantic_query, vector_db=_session_vector_db(), limit=15)
         if results:
             st.markdown(f"### Found {len(results)} attributable sources")
             for result in results:
@@ -999,10 +988,10 @@ def render_knowledge_graph():
     if "semantic similarity" in edge_types:
         with st.spinner("Adding semantic similarity edges..."):
             for pid in ids:
-                vec = st.session_state.vdb.get_embedding(pid)
+                vec = _session_vector_db().get_embedding(pid)
                 if vec is None:
                     continue
-                for result in st.session_state.vdb.search_by_vector(vec, top_k=5, exclude_id=pid):
+                for result in _session_vector_db().search_by_vector(vec, top_k=5, exclude_id=pid):
                     other = result["id"]
                     if other not in paper_by_id:
                         continue
@@ -1144,11 +1133,11 @@ def _chat_with_paper(pid: str, paper: Dict, user_message: str) -> str:
             paper,
             arxiv_client=st.session_state.arxiv,
             pdf_extractor=st.session_state.pdf_extractor,
-            vector_db=st.session_state.vdb,
+            vector_db=_session_vector_db(),
         )
         evidence = retrieval.hybrid_search(
             user_message,
-            vector_db=st.session_state.vdb,
+            vector_db=_session_vector_db(),
             paper_ids=[pid],
             limit=8,
         )
@@ -1430,7 +1419,7 @@ def render_papers_list():
                     dcol1, dcol2 = st.columns(2)
                     if dcol1.button("Yes, delete", key=f"del_confirm_{pid}", type="primary"):
                         paper_store.delete_paper(pid)
-                        st.session_state.vdb.delete_paper(pid)
+                        _session_vector_db().delete_paper(pid)
                         st.session_state.papers = [
                             p for p in st.session_state.papers
                             if p.get("arxiv_id") != pid
@@ -1442,9 +1431,9 @@ def render_papers_list():
                 if pid:
                     _render_report_controls(paper, pid, key_prefix="library")
             if st.session_state.get(f"show_mlt_{pid}", False):
-                vec = st.session_state.vdb.get_embedding(pid)
+                vec = _session_vector_db().get_embedding(pid)
                 if vec is not None:
-                    similar = st.session_state.vdb.search_by_vector(vec, top_k=5, exclude_id=pid)
+                    similar = _session_vector_db().search_by_vector(vec, top_k=5, exclude_id=pid)
                     if similar:
                         st.markdown("**Similar papers in your library:**")
                         for s in similar:
@@ -1756,7 +1745,7 @@ def _retrieved_library_context(query: str, *, paper_ids: list[str] | None = None
     """Retrieve bounded, attributable context rather than serializing the full library."""
     evidence = retrieval.hybrid_search(
         query or "main contribution methods results limitations",
-        vector_db=st.session_state.vdb,
+        vector_db=_session_vector_db(),
         paper_ids=paper_ids,
         limit=limit,
     )
@@ -1805,7 +1794,7 @@ def render_lit_review_builder():
     selected_ids = [paper.get("arxiv_id", "") for paper in selected]
     matrix = synthesis.claim_matrix(
         evidence_query,
-        vector_db=st.session_state.vdb,
+        vector_db=_session_vector_db(),
         paper_ids=selected_ids,
         limit=24,
     )
@@ -2805,7 +2794,7 @@ def render_projects():
                     title=meeting_title or f"Meeting for {project.get('title', project_id)}",
                     text=meeting_text,
                     locator={"project_id": project_id, "created_at": datetime.now(timezone.utc).isoformat()},
-                    vector_db=st.session_state.vdb,
+                    vector_db=_session_vector_db(),
                 )
                 st.success("Meeting notes saved and indexed.")
 
@@ -2934,17 +2923,24 @@ def render_research_ops():
 
     with indexing_tab:
         health = research_db.health_snapshot()
+        vector_count = _session_vector_db().collection.count()
         cols = st.columns(4)
         cols[0].metric("Papers", health["papers"])
-        cols[1].metric("Documents", health["documents"])
+        cols[1].metric("Vector records", vector_count)
         cols[2].metric("Queued/running", health["pending_jobs"])
         cols[3].metric("Failed", health["failed_jobs"])
+        st.caption(f"Search documents: {health['documents']}")
+        if vector_count != health["papers"]:
+            st.warning(
+                f"Vector index count differs from the library by "
+                f"{abs(health['papers'] - vector_count)} records."
+            )
         start_col, repair_col = st.columns(2)
         if start_col.button("Index missing full text", type="primary", use_container_width=True):
             job_id = index_jobs.enqueue_library_index(
                 arxiv_client=st.session_state.arxiv,
                 pdf_extractor=st.session_state.pdf_extractor,
-                vector_db=st.session_state.vdb,
+                vector_db=_session_vector_db(),
             )
             st.success(f"Queued indexing job {job_id[:8]}.")
         if repair_col.button("Repair interrupted jobs", use_container_width=True):
@@ -3172,43 +3168,36 @@ def main():
     _auto_sync_papers_from_store()
     render_header()
 
+    workspaces = {
+        "Inbox": render_inbox,
+        "Semantic Search": render_vector_search,
+        "Knowledge Graph": render_knowledge_graph,
+        "Library": render_papers_list,
+        "Assistant": render_assistant,
+        "Lit Review": render_lit_review_builder,
+        "Projects": render_projects,
+        "Paper Ideas": render_paper_ideas,
+        "Grant Ideas": render_grant_ideas,
+        "Citation Opportunities": render_citation_opportunities,
+        "Library Health": render_research_ops,
+        "Schedule": render_schedule,
+        "Profile": render_profile,
+    }
+    st.sidebar.header("Workspace")
+    selected_workspace = st.sidebar.selectbox(
+        "View",
+        list(workspaces),
+        key="workspace_view",
+        label_visibility="collapsed",
+    )
+    st.sidebar.divider()
+
     query, author, categories, max_results, date_from = render_sidebar()
 
     if query is not None:  # None means Search button was not pressed
         render_search_results(query, author, categories, max_results, date_from)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
-        "Inbox", "Semantic Search", "Knowledge Graph", "Library",
-        "Assistant", "Lit Review", "Projects", "Paper Ideas", "Grant Ideas",
-        "Citation Opportunities", "Library Health", "Schedule", "Profile",
-    ])
-
-    with tab1:
-        render_inbox()
-    with tab2:
-        render_vector_search()
-    with tab3:
-        render_knowledge_graph()
-    with tab4:
-        render_papers_list()
-    with tab5:
-        render_assistant()
-    with tab6:
-        render_lit_review_builder()
-    with tab7:
-        render_projects()
-    with tab8:
-        render_paper_ideas()
-    with tab9:
-        render_grant_ideas()
-    with tab10:
-        render_citation_opportunities()
-    with tab11:
-        render_research_ops()
-    with tab12:
-        render_schedule()
-    with tab13:
-        render_profile()
+    workspaces[selected_workspace]()
 
 
 if __name__ == "__main__":
