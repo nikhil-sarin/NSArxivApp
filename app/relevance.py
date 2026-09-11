@@ -177,7 +177,7 @@ def score_tracking_papers(
             (_cosine_vectors(vector, negative_vector) for negative_vector in negative_vectors),
             default=0.0,
         )
-        adjusted = max(0.0, min(1.0, best_score - 0.25 * negative_score))
+        adjusted = max(0.0, min(1.0, best_score - 0.10 * negative_score))
         excluded = next(
             (phrase for phrase in exclusions if phrase and phrase in normalized_paper),
             "",
