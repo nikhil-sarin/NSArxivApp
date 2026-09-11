@@ -163,7 +163,7 @@ def render_sidebar():
         "Select categories:",
         options=[
             "cs.LG", "cs.CL", "cs.CV", "cs.AI",
-            "astro-ph.HE", "astro-ph.CO", "astro-ph.GA",
+            "astro-ph.HE", "astro-ph.SR", "astro-ph.CO", "astro-ph.GA", "astro-ph.IM",
             "physics.hep-th", "gr-qc",
             "q-bio.QM", "q-fin.CP",
         ],
@@ -547,10 +547,8 @@ def _render_report_controls(paper: Dict, pid: str, *, key_prefix: str):
     )
 
 
-def _store_paper(pid: str, metadata: Dict, summary: str, paper_text: str = ""):
-    """Persist a paper, update its embedding, and queue citation discovery."""
-    paper_store.save_paper(pid, metadata, summary)
-
+def _upsert_reading_embedding(pid: str, metadata: Dict, summary: str) -> None:
+    """Add or restore one paper in the reading-focused semantic index."""
     def _chroma_safe(v):
         """Convert a value to a ChromaDB-safe scalar."""
         if v is None or isinstance(v, (str, int, float, bool)):
@@ -581,6 +579,12 @@ def _store_paper(pid: str, metadata: Dict, summary: str, paper_text: str = ""):
         metadata=chroma_meta,
     )
 
+
+def _store_paper(pid: str, metadata: Dict, summary: str, paper_text: str = ""):
+    """Persist a paper, update its embedding, and queue citation discovery."""
+    paper_store.save_paper(pid, metadata, summary)
+    _upsert_reading_embedding(pid, metadata, summary)
+
     citation_discovery.enqueue_paper({**metadata, "summary": summary}, paper_text)
 
 
@@ -599,11 +603,28 @@ def _ingest_by_arxiv_id(raw_input: str, in_sidebar: bool = False):
     """Fetch, summarize, and store a paper given an ArXiv URL or ID."""
     arxiv_id = _parse_arxiv_id(raw_input)
 
-    if paper_store.paper_exists(arxiv_id) or paper_store.paper_exists(arxiv_id + "v1"):
-        if in_sidebar:
-            st.sidebar.info("Paper already in library.")
+    existing_id = paper_store.resolve_paper_id(arxiv_id)
+    if existing_id:
+        existing = paper_store.get_paper(existing_id) or {}
+        triage = paper_store.get_triage(existing_id) or {}
+        message_target = st.sidebar if in_sidebar else st
+        if triage.get("status") == "irrelevant":
+            with st.spinner("Promoting and summarizing paper..."):
+                summary = _regenerate_summary(existing)
+            paper_store.update_triage(existing_id, status="inbox", feedback=1)
+            if not summary:
+                _upsert_reading_embedding(
+                    existing_id,
+                    existing,
+                    str(existing.get("summary") or existing.get("abstract") or ""),
+                )
+            if not any(
+                paper.get("arxiv_id") == existing_id for paper in st.session_state.papers
+            ):
+                st.session_state.papers.append(existing)
+            message_target.success("Promoted monitoring-only paper to Inbox.")
         else:
-            st.info("Paper already in library.")
+            message_target.info("Paper is already in the reading library.")
         return
 
     context = st.sidebar if in_sidebar else nullcontext()
@@ -889,7 +910,7 @@ def render_inbox():
         "skimmed": "Skimmed",
         "read": "Read",
         "saved": "Library",
-        "irrelevant": "Irrelevant",
+        "irrelevant": "Monitor only",
     }
     ctrl1, ctrl2 = st.columns([2, 1])
     selected_label = ctrl1.selectbox("View", list(status_labels.values()), key="inbox_status")
@@ -903,7 +924,10 @@ def render_inbox():
         st.info("No papers in this view.")
         return
 
-    st.caption(f"{len(papers)} papers shown. New scheduled papers arrive in Inbox.")
+    if selected_status == "irrelevant":
+        st.caption(f"{len(papers)} monitoring-only papers shown. Promote any missed paper to train future ranking.")
+    else:
+        st.caption(f"{len(papers)} papers shown.")
     for paper in papers:
         pid = paper.get("arxiv_id", "")
         triage = paper.get("triage", {})
@@ -914,6 +938,18 @@ def render_inbox():
             if triage.get("relevance_reason"):
                 st.caption(triage["relevance_reason"])
             st.write(paper.get("summary") or paper.get("abstract") or "No summary available.")
+            if selected_status == "irrelevant" and st.button(
+                "Promote to Inbox",
+                key=f"promote_{pid}",
+                type="primary",
+            ):
+                paper_store.update_triage(pid, status="inbox", feedback=1)
+                _upsert_reading_embedding(
+                    pid,
+                    paper,
+                    str(paper.get("summary") or paper.get("abstract") or ""),
+                )
+                st.rerun()
             action_cols = st.columns(6)
             actions = [
                 ("Read later", "read_later", None),
@@ -1589,7 +1625,10 @@ def render_schedule():
             sched_query = st.text_input("Search query for scheduled job", placeholder="neutron star kilonova")
         sched_cats = st.multiselect(
             "Categories",
-            ["cs.LG", "cs.CL", "cs.CV", "cs.AI", "astro-ph.HE", "astro-ph.SR", "astro-ph.CO", "astro-ph.GA", "physics.hep-th", "gr-qc"],
+            [
+                "cs.LG", "cs.CL", "cs.CV", "cs.AI", "astro-ph.HE", "astro-ph.SR",
+                "astro-ph.CO", "astro-ph.GA", "astro-ph.IM", "physics.hep-th", "gr-qc",
+            ],
             default=st.session_state.get("sidebar_default_cats", ["astro-ph.HE", "astro-ph.SR", "gr-qc"]),
         )
         sched_max = st.number_input(

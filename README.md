@@ -240,7 +240,7 @@ python -m app.fetch_job \
 
 Add to your crontab (`crontab -e`):
 ```
-0 7 * * * cd /path/to/NSArxivApp && /path/to/python -m app.fetch_job --mode new-submissions --categories astro-ph.HE astro-ph.SR gr-qc --max-results 0 --days-back 1 >> /path/to/NSArxivApp/data/fetch.log 2>&1
+0 7 * * * cd /path/to/NSArxivApp && /path/to/python -m app.fetch_job --mode new-submissions --categories astro-ph.HE astro-ph.SR astro-ph.CO astro-ph.GA astro-ph.IM gr-qc --max-results 0 --days-back 1 >> /path/to/NSArxivApp/data/fetch.log 2>&1
 ```
 
 The **Schedule** tab can also install a managed Linux cron entry for you directly.

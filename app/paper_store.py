@@ -231,6 +231,37 @@ def get_paper(paper_id: str) -> Optional[Dict]:
         db.close()
 
 
+def resolve_paper_id(arxiv_id: str) -> Optional[str]:
+    """Resolve a versionless arXiv ID to the stored paper key, if present."""
+    canonical = str(arxiv_id).split("v")[0]
+    _migrate_legacy_if_needed()
+    db = research_db.connect()
+    try:
+        row = db.execute(
+            "SELECT paper_id FROM papers WHERE paper_id=? OR paper_id LIKE ? "
+            "ORDER BY paper_id DESC LIMIT 1",
+            (canonical, f"{canonical}v%"),
+        ).fetchone()
+        return row["paper_id"] if row else None
+    finally:
+        db.close()
+
+
+def get_triage(paper_id: str) -> Optional[Dict]:
+    """Return the current triage state for one stored paper."""
+    _migrate_legacy_if_needed()
+    db = research_db.connect()
+    try:
+        row = db.execute(
+            "SELECT status, feedback, relevance_score, relevance_reason "
+            "FROM triage WHERE paper_id=?",
+            (paper_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        db.close()
+
+
 def get_notes(paper_id: str) -> Dict:
     return _normalized_notes(get_paper(paper_id) or {})
 

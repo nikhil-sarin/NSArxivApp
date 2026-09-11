@@ -82,6 +82,19 @@ class ResearchStoreTests(unittest.TestCase):
         )
         self.assertEqual(len(paper_store.load_all_papers()), 2)
 
+    def test_versionless_id_resolves_to_stored_version_and_triage(self):
+        paper_store.save_paper(
+            "2601.00012v2",
+            {"arxiv_id": "2601.00012v2", "title": "Tracked paper"},
+            "Summary",
+        )
+        paper_store.update_triage("2601.00012v2", status="irrelevant", relevance_score=20)
+
+        stored_id = paper_store.resolve_paper_id("2601.00012")
+
+        self.assertEqual(stored_id, "2601.00012v2")
+        self.assertEqual(paper_store.get_triage(stored_id)["status"], "irrelevant")
+
     def test_notes_are_full_text_searchable(self):
         paper_store.save_paper(
             "2601.00003",
