@@ -919,7 +919,40 @@ def render_inbox():
         count = _rescore_inbox()
         st.success(f"Scored {count} inbox papers against your profile, projects, and feedback.")
 
-    papers = paper_store.load_triage(status=selected_status, limit=100)
+    monitor_query = ""
+    monitor_sort = "Closest to threshold"
+    if selected_status == "irrelevant":
+        monitor_col1, monitor_col2 = st.columns([2, 1])
+        monitor_query = monitor_col1.text_input(
+            "Find monitored paper",
+            placeholder="ArXiv ID or title",
+            key="monitor_paper_query",
+        ).strip().casefold()
+        monitor_sort = monitor_col2.selectbox(
+            "Order",
+            ["Closest to threshold", "Lowest score"],
+            key="monitor_paper_sort",
+        )
+
+    papers = paper_store.load_triage(
+        status=selected_status,
+        limit=5000 if selected_status == "irrelevant" else 100,
+    )
+    if monitor_query:
+        papers = [
+            paper for paper in papers
+            if monitor_query in str(paper.get("arxiv_id", "")).casefold()
+            or monitor_query in str(paper.get("title", "")).casefold()
+        ]
+    if selected_status == "irrelevant" and monitor_sort == "Lowest score":
+        papers.sort(
+            key=lambda paper: (
+                paper.get("triage", {}).get("relevance_score")
+                if paper.get("triage", {}).get("relevance_score") is not None
+                else -1
+            )
+        )
+    papers = papers[:100]
     if not papers:
         st.info("No papers in this view.")
         return
