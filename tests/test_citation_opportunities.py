@@ -70,6 +70,37 @@ class CitationOpportunityTests(unittest.TestCase):
         actionable = citation_opportunity_store.list_actionable()
         self.assertEqual([item["opportunity_id"] for item in actionable], ["positive"])
 
+    def test_actionable_queue_can_filter_by_versionless_paper_id(self):
+        base = {
+            "analysis_version": "3", "catalogue_version": "1.0", "confidence": 0.8,
+            "status": "proposed", "rationale": "Test", "counterargument": "Test",
+            "evidence": [], "reference_check": {}, "model": {},
+            "contribution_id": "redback", "classification": "potentially_useful",
+        }
+        citation_opportunity_store.save({
+            **base, "opportunity_id": "wanted", "paper_id": "2609.09520v1",
+        })
+        citation_opportunity_store.save({
+            **base, "opportunity_id": "other", "paper_id": "2609.08356",
+        })
+
+        actionable = citation_opportunity_store.list_actionable(paper_id="2609.09520")
+
+        self.assertEqual([item["opportunity_id"] for item in actionable], ["wanted"])
+
+    def test_arxiv_id_lookup_accepts_urls_labels_and_versions(self):
+        self.assertEqual(
+            citation_opportunities.arxiv_id_from_input(
+                "https://arxiv.org/abs/2609.09520v2"
+            ),
+            "2609.09520",
+        )
+        self.assertEqual(
+            citation_opportunities.arxiv_id_from_input("arXiv:2609.08356"),
+            "2609.08356",
+        )
+        self.assertIsNone(citation_opportunities.arxiv_id_from_input("mass loss history"))
+
     def test_complete_json_fence_is_accepted_but_surrounding_prose_is_not(self):
         payload = json.dumps({
             "classification": "potentially_useful", "confidence": 0.72,

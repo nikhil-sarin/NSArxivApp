@@ -18,6 +18,14 @@ ANALYSIS_VERSION = "3"
 CLASSIFICATIONS = {
     "strong_citation_opportunity", "potentially_useful", "not_relevant", "insufficient_evidence",
 }
+
+
+def arxiv_id_from_input(value: str) -> str | None:
+    """Extract a canonical modern arXiv ID from an ID, URL, or arXiv label."""
+    match = re.search(r"(?:arxiv:\s*)?(\d{4}\.\d{4,5})(?:v\d+)?", value, flags=re.I)
+    return match.group(1) if match else None
+
+
 BANNED_LANGUAGE = {"citation theft", "misconduct", "should have known"}
 
 

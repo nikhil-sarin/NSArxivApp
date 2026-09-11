@@ -3031,6 +3031,14 @@ def render_citation_opportunities():
     metric_cols[3].metric("Failed checks", failed_count)
     metric_cols[4].metric("Your works", len(contributions))
 
+    by_id = {item["id"]: item for item in catalogue["contributions"]}
+    papers_by_id = {paper.get("arxiv_id", ""): paper for paper in papers}
+    paper_lookup = st.text_input(
+        "Find a paper",
+        placeholder="ArXiv ID, URL, or title",
+        key="citation_paper_lookup",
+    ).strip()
+
     with st.expander("Recheck a paper", expanded=False):
         paper_options = {_paper_label(paper): paper for paper in sorted(papers, key=_published_sort_key, reverse=True)}
         paper_label = st.selectbox("Paper", list(paper_options), key="citation_paper")
@@ -3045,24 +3053,44 @@ def render_citation_opportunities():
             else:
                 st.success(f"Queued {job_id[:8]}.")
 
-    by_id = {item["id"]: item for item in catalogue["contributions"]}
-    papers_by_id = {paper.get("arxiv_id", ""): paper for paper in papers}
     completed = [
         item for item in all_opportunities
         if item not in reviewable and item["status"] in {"confirmed", "exported"}
     ]
-    view = st.radio(
-        "View",
-        ["Strong matches", "All reviewable", "Sent to Email drafts"],
-        horizontal=True,
-        key="citation_opportunity_view",
-    )
-    if view == "Strong matches":
-        displayed = [item for item in reviewable if item["classification"] == "strong_citation_opportunity"]
-    elif view == "All reviewable":
-        displayed = reviewable
+    if paper_lookup:
+        lookup_id = citation_opportunities.arxiv_id_from_input(paper_lookup)
+        if lookup_id:
+            displayed = citation_opportunity_store.list_actionable(
+                limit=500,
+                paper_id=lookup_id,
+            )
+        else:
+            query = paper_lookup.casefold()
+            displayed = [
+                item for item in all_opportunities
+                if query in item["paper_id"].casefold()
+                or query in str(
+                    papers_by_id.get(item["paper_id"], {}).get("title", "")
+                ).casefold()
+            ]
+        empty_message = f"No citation opportunities found for {paper_lookup}."
     else:
-        displayed = completed
+        view = st.radio(
+            "View",
+            ["Strong matches", "All reviewable", "Sent to Email drafts"],
+            horizontal=True,
+            key="citation_opportunity_view",
+        )
+        if view == "Strong matches":
+            displayed = [
+                item for item in reviewable
+                if item["classification"] == "strong_citation_opportunity"
+            ]
+        elif view == "All reviewable":
+            displayed = reviewable
+        else:
+            displayed = completed
+        empty_message = f"No opportunities in {view.lower()}."
 
     if displayed:
         summary_rows = []
@@ -3082,7 +3110,7 @@ def render_citation_opportunities():
             })
         st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
     if not displayed:
-        st.info(f"No opportunities in {view.lower()}.")
+        st.info(empty_message)
     for opportunity in displayed:
         source_paper = papers_by_id.get(opportunity["paper_id"], {"title": opportunity["paper_id"], "authors": []})
         matched = by_id.get(opportunity["contribution_id"], {"name": opportunity["contribution_id"], "canonical_citations": []})

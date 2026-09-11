@@ -55,17 +55,23 @@ def list_opportunities(status: str | None = None, limit: int = 100) -> list[dict
         db.close()
 
 
-def list_actionable(limit: int = 500) -> list[dict]:
+def list_actionable(limit: int = 500, *, paper_id: str | None = None) -> list[dict]:
     """Return the review/export queue without letting negative analyses crowd it out."""
     db = research_db.connect()
     try:
+        paper_filter = "AND (paper_id=? OR paper_id LIKE ?)" if paper_id else ""
+        params: list[object] = [paper_id, f"{paper_id}v%"] if paper_id else []
+        params.append(limit)
         rows = db.execute(
-            """
+            f"""
             SELECT * FROM citation_opportunities
             WHERE (
-                classification IN ('strong_citation_opportunity', 'potentially_useful')
-                AND status IN ('proposed', 'needs_review')
-            ) OR status IN ('confirmed', 'exported')
+                (
+                    classification IN ('strong_citation_opportunity', 'potentially_useful')
+                    AND status IN ('proposed', 'needs_review')
+                ) OR status IN ('confirmed', 'exported')
+            )
+            {paper_filter}
             ORDER BY
                 CASE classification
                     WHEN 'strong_citation_opportunity' THEN 0
@@ -76,7 +82,7 @@ def list_actionable(limit: int = 500) -> list[dict]:
                 updated_at DESC
             LIMIT ?
             """,
-            (limit,),
+            params,
         ).fetchall()
         result = []
         for row in rows:
