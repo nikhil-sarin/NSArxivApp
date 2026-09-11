@@ -25,7 +25,7 @@ from app import citation_discovery
 from app import contribution_catalogue, idea_store, relevance, researcher_profile
 
 
-TRACKING_RELEVANCE_THRESHOLD = 45.0
+TRACKING_RELEVANCE_THRESHOLD = 50.0
 
 MAX_EMPTY_DATE_LOOKBACK_DAYS = 7
 

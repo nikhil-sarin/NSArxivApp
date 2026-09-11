@@ -890,7 +890,7 @@ def _rescore_inbox() -> int:
         negative_papers=negative,
         encode=_session_vector_db().embedder.encode,
     )
-    threshold = float(os.getenv("TRACKING_RELEVANCE_THRESHOLD", "45"))
+    threshold = float(os.getenv("TRACKING_RELEVANCE_THRESHOLD", "50"))
     for paper in scored:
         paper_store.update_triage(
             paper.get("arxiv_id", ""),
