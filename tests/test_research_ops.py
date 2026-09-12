@@ -5,13 +5,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from app import evaluation, index_jobs, job_queue, maintenance, paper_store, privacy, research_db, synthesis, trends
+from app import evaluation, index_jobs, job_queue, maintenance, paper_store, privacy, research_db, summary_jobs, synthesis, trends
 from app.corpus_index import index_text_record
 
 
 class FakeVectorDB:
     def __init__(self):
         self.documents = {}
+        self.collection = mock.Mock()
 
     def upsert_document(self, document_id, text, metadata):
         self.documents[document_id] = {"text": text, "metadata": metadata}
@@ -22,6 +23,9 @@ class FakeVectorDB:
 
     def search_documents(self, query, top_k=10, paper_ids=None):
         return []
+
+    def add_paper(self, paper_id, title, summary, metadata):
+        self.documents[paper_id] = {"text": summary, "metadata": metadata}
 
 
 class ResearchOpsTests(unittest.TestCase):
@@ -147,6 +151,48 @@ class ResearchOpsTests(unittest.TestCase):
         finally:
             db.close()
         self.assertEqual(status, "queued")
+
+    def test_summary_job_persists_provenance_and_embedding(self):
+        paper_store.save_paper(
+            "2609.21",
+            {"arxiv_id": "2609.21", "title": "Transient summary", "abstract": "Abstract"},
+            "Old summary",
+        )
+        with research_db.transaction() as db:
+            db.execute(
+                "INSERT INTO jobs(job_id, kind, status, created_at, updated_at) "
+                "VALUES('summary-test', 'summary_regeneration', 'running', 'now', 'now')"
+            )
+
+        class FakeSummarizer:
+            last_fallback_reason = ""
+
+            def summarize(self, text, max_length=300, detailed=False):
+                return ("A complete technical summary of methods, results, assumptions, and limitations. " * 10).strip()
+
+            def _active_provider(self):
+                return "openai"
+
+            def _active_model(self):
+                return "test-model"
+
+        vector_db = FakeVectorDB()
+        with mock.patch("app.summary_jobs.get_paper_text", return_value="Full paper text " * 20):
+            result = summary_jobs._run(
+                {"paper_ids": ["2609.21"], "detailed": True},
+                {
+                    "job_id": "summary-test",
+                    "arxiv_client": object(),
+                    "pdf_extractor": object(),
+                    "vector_db": vector_db,
+                    "summarizer": FakeSummarizer(),
+                },
+            )
+        stored = paper_store.get_paper("2609.21")
+        self.assertEqual(result["papers_completed"], 1)
+        self.assertEqual(stored["summary_provenance"]["status"], "complete")
+        self.assertEqual(stored["summary_provenance"]["model"], "test-model")
+        self.assertIn("2609.21", vector_db.documents)
 
     def test_semantic_clusters_are_filtered_by_profile_relevance(self):
         now = datetime.now(timezone.utc)
