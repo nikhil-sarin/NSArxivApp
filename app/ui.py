@@ -3086,17 +3086,20 @@ def render_research_ops():
 def render_citation_opportunities():
     """Render the automatically populated evidence-review and export queue."""
     st.header("Citation Opportunities")
-    orchestrator_endpoint = os.getenv(
-        "LOCAL_ORCHESTRATOR_URL", "http://127.0.0.1:8775/v1/import-bundles"
-    )
-    orchestrator_ui = os.getenv(
-        "LOCAL_ORCHESTRATOR_UI_URL", orchestrator_endpoint.split("/v1/", 1)[0]
-    )
-    st.info(
-        "Review the scientific match here. If it is worth contacting the authors, "
-        "send it to Email drafts; LocalOrchestrator will prepare editable text and never send it."
-    )
-    st.link_button("Open Email drafts →", orchestrator_ui)
+    orchestrator_endpoint = os.getenv("LOCAL_ORCHESTRATOR_URL", "").strip()
+    orchestrator_ui = os.getenv("LOCAL_ORCHESTRATOR_UI_URL", "").strip()
+    if orchestrator_endpoint:
+        orchestrator_ui = orchestrator_ui or orchestrator_endpoint.split("/v1/", 1)[0]
+        st.info(
+            "Review the scientific match here. If it is worth contacting the authors, "
+            "send it to Email drafts; LocalOrchestrator will prepare editable text and never send it."
+        )
+        st.link_button("Open Email drafts →", orchestrator_ui)
+    else:
+        st.info(
+            "Review, reject, and edit citation opportunities here. Email-draft handoff "
+            "is optional and is not configured for this installation."
+        )
     try:
         catalogue = contribution_catalogue.load()
     except contribution_catalogue.CatalogueError as exc:
@@ -3538,9 +3541,12 @@ def render_citation_opportunities():
                 item["status"] in {"proposed", "needs_review"} for item in group
             )
             if st.button(
-                "Send one combined email to Email drafts →",
+                (
+                    "Send one combined email to Email drafts →"
+                    if orchestrator_endpoint else "Email drafts not configured"
+                ),
                 key=f"confirm_citation_group_{opportunity['paper_id']}",
-                disabled=not can_export,
+                disabled=not can_export or not orchestrator_endpoint,
                 type="primary",
             ):
                 try:
@@ -3598,11 +3604,12 @@ def main():
         "Projects": render_projects,
         "Paper Ideas": render_paper_ideas,
         "Grant Ideas": render_grant_ideas,
-        "Citation Opportunities": render_citation_opportunities,
         "Library Health": render_research_ops,
         "Schedule": render_schedule,
         "Profile": render_profile,
     }
+    if citation_discovery.enabled():
+        workspaces["Citation Opportunities"] = render_citation_opportunities
     st.sidebar.header("Workspace")
     selected_workspace = st.sidebar.selectbox(
         "View",

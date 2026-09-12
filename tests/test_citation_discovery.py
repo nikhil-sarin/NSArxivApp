@@ -7,6 +7,12 @@ from app import citation_discovery, research_db
 
 
 class CitationDiscoveryTests(unittest.TestCase):
+    def test_personal_citation_discovery_is_opt_in(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(citation_discovery.enabled())
+        with mock.patch.dict("os.environ", {"AUTO_CITATION_DISCOVERY": "true"}):
+            self.assertTrue(citation_discovery.enabled())
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_patch = mock.patch.object(research_db, "DB_PATH", Path(self.tempdir.name) / "research.db")

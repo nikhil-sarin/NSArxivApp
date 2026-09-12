@@ -459,6 +459,23 @@ class CitationOpportunityTests(unittest.TestCase):
             {"Authorization": "Bearer machine-secret"},
         )
 
+    @mock.patch("app.citation_opportunities.requests.post")
+    def test_export_without_orchestrator_configuration_remains_local(self, post):
+        opportunity = {
+            "opportunity_id": "cop_1", "paper_id": "2609.1",
+            "contribution_id": "redback", "catalogue_version": "1.2",
+            "classification": "strong_citation_opportunity", "confidence": 0.9,
+            "rationale": "Relevant", "counterargument": "May not apply",
+            "evidence": PACKET["passages"], "status": "confirmed",
+        }
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "not configured"):
+                citation_opportunities.export_bundle(
+                    [opportunity], {"title": "A paper", "authors": ["A. Author"]},
+                    {"redback": CONTRIBUTION},
+                )
+        post.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

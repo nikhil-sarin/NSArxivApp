@@ -23,7 +23,7 @@ def _now() -> str:
 
 
 def enabled() -> bool:
-    return os.getenv("AUTO_CITATION_DISCOVERY", "true").strip().lower() in {"1", "true", "yes", "on"}
+    return os.getenv("AUTO_CITATION_DISCOVERY", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def discover_paper(paper: dict, paper_text: str, *, force: bool = False) -> dict:

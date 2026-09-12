@@ -300,11 +300,17 @@ Upload a JSON list in a project's **Actions** view. Only these action types are 
 
 Imports always enter `proposed` state. The app does not execute an action, and an action cannot be marked `executed` until it has first been explicitly approved.
 
-### Citation-opportunity workflow
+### Citation-opportunity workflow (optional)
 
 `config/contributions.example.json` contains the validated catalogue schema and verified Redback citation metadata. Copy it to the ignored `config/contributions.json` to customize private scope notes, or point `NSARXIV_CONTRIBUTIONS_PATH` at another file. Disabled entries are never analysed.
 
-Newly ingested papers are checked automatically using deterministic signal and reference filters before any model call. Only filtered candidates receive a strict evidence-grounded model judgement. The **Citation Opportunities** view is the manual review and export queue; its advanced controls can rerun a specific paper when the contribution catalogue changes.
+NSArxivApp does not require LocalOrchestrator. Public and standalone installations leave this personal workflow disabled, do not display its workspace, and make no LocalOrchestrator requests. Enable automatic checks explicitly with:
+
+```env
+AUTO_CITATION_DISCOVERY=true
+```
+
+Newly ingested papers are then checked using deterministic signal and reference filters before any model call. Only filtered candidates receive a strict evidence-grounded model judgement. The **Citation Opportunities** view is the local manual review queue; its controls can create, edit, reject, or rerun a match without another service.
 
 Backfill a bounded recent slice after expanding the catalogue:
 
@@ -312,7 +318,7 @@ Backfill a bounded recent slice after expanding the catalogue:
 python -m app.citation_backfill --days 90 --max-papers 100
 ```
 
-Only `strong_citation_opportunity` and `potentially_useful` findings can be confirmed. Confirmation looks for an explicitly published corresponding-author address in the paper or bounded arXiv source, then posts a stable, bounded ImportBundle to `LOCAL_ORCHESTRATOR_URL` using `LOCAL_ORCHESTRATOR_API_TOKEN`; it includes quotes and catalogue metadata, never full paper text or secrets. LocalOrchestrator prepares a draft plan when you approve the candidate, generates editable subject/body text only after exact-plan approval, and can separately create an unsent Gmail draft when OAuth is configured. Neither app sends email.
+LocalOrchestrator handoff is a separate opt-in integration. Set `LOCAL_ORCHESTRATOR_URL` to display the Email drafts controls; `LOCAL_ORCHESTRATOR_UI_URL` and `LOCAL_ORCHESTRATOR_API_TOKEN` are optional deployment settings. Handoff posts a stable, bounded ImportBundle containing quotes and catalogue metadata, never full paper text or secrets. Without these variables, all citation review and editing remains inside NSArxivApp. Neither app sends email.
 
 ---
 

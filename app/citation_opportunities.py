@@ -438,7 +438,12 @@ def export_bundle(
     bundle = build_import_bundle(
         opportunities, paper, contributions_by_id, tone_note=tone_note
     )
-    endpoint = url or os.getenv("LOCAL_ORCHESTRATOR_URL", "http://127.0.0.1:8775/v1/import-bundles")
+    endpoint = (url or os.getenv("LOCAL_ORCHESTRATOR_URL", "")).strip()
+    if not endpoint:
+        raise ValueError(
+            "Email drafts are not configured. Citation opportunities remain available "
+            "for local review without LocalOrchestrator."
+        )
     api_token = os.getenv("LOCAL_ORCHESTRATOR_API_TOKEN", "").strip()
     headers = {"Authorization": f"Bearer {api_token}"} if api_token else {}
     try:
