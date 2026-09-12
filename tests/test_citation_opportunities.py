@@ -242,15 +242,89 @@ class CitationOpportunityTests(unittest.TestCase):
             "corresponding_author": {"name": "A. Author", "email": "author@example.edu"},
         }
         with self.assertRaises(ValueError):
-            citation_opportunities.build_import_bundle(opportunity, paper, CONTRIBUTION)
-        bundle = citation_opportunities.build_import_bundle({**opportunity, "status": "confirmed"}, paper, CONTRIBUTION)
-        self.assertEqual(bundle["candidates"][0]["external_id"], "cop_1:draft-email")
+            citation_opportunities.build_import_bundle(
+                [opportunity], paper, {"redback": CONTRIBUTION}
+            )
+        bundle = citation_opportunities.build_import_bundle(
+            [{**opportunity, "status": "confirmed"}],
+            paper,
+            {"redback": CONTRIBUTION},
+        )
+        self.assertTrue(
+            bundle["candidates"][0]["external_id"].startswith("cop_group_")
+        )
         context = json.loads(bundle["candidates"][0]["context"])
         self.assertNotIn("full_text", context)
         self.assertEqual(context["paper"]["arxiv_id"], "2609.1")
         self.assertEqual(context["paper"]["corresponding_author"]["email"], "author@example.edu")
-        self.assertEqual(context["contribution"]["url"], "https://example.org/redback")
+        self.assertEqual(context["contributions"][0]["url"], "https://example.org/redback")
         self.assertEqual(context["evidence"][0]["quote"], PACKET["passages"][0]["quote"])
+        self.assertEqual(
+            context["citation_request"],
+            "I would kindly ask you to consider citing this work.",
+        )
+
+    def test_multiple_opportunities_share_one_email_candidate(self):
+        second_contribution = {
+            **CONTRIBUTION,
+            "id": "mass-loss",
+            "name": "Mass-loss histories",
+            "public_url": "https://example.org/mass-loss",
+        }
+        opportunities = [
+            {
+                "opportunity_id": "cop_1",
+                "paper_id": "2609.1",
+                "catalogue_version": "1.2",
+                "classification": "strong_citation_opportunity",
+                "confidence": 0.9,
+                "rationale": "Bilby is used for transient inference.",
+                "counterargument": "A bespoke workflow may be sufficient.",
+                "evidence": PACKET["passages"],
+                "status": "confirmed",
+            },
+            {
+                "opportunity_id": "cop_2",
+                "paper_id": "2609.1",
+                "catalogue_version": "1.2",
+                "classification": "potentially_useful",
+                "confidence": 0.7,
+                "rationale": "The wind mapping affects the inferred history.",
+                "counterargument": "The approximation may be adequate.",
+                "evidence": [{"locator": "Discussion", "quote": "A steady wind is assumed."}],
+                "status": "confirmed",
+            },
+        ]
+
+        bundle = citation_opportunities.build_import_bundle(
+            opportunities,
+            {"title": "A paper", "authors": ["A. Author"]},
+            {"redback": CONTRIBUTION, "mass-loss": second_contribution},
+        )
+
+        self.assertEqual(len(bundle["candidates"]), 1)
+        context = json.loads(bundle["candidates"][0]["context"])
+        self.assertEqual(
+            [item["id"] for item in context["contributions"]],
+            ["redback", "mass-loss"],
+        )
+        self.assertEqual(len(context["evidence"]), 2)
+        self.assertEqual(
+            context["citation_request"],
+            "I would kindly ask you to consider citing these works.",
+        )
+
+    def test_grouping_preserves_paper_and_queue_order(self):
+        grouped = citation_opportunities.group_by_paper([
+            {"paper_id": "paper-a", "opportunity_id": "a1"},
+            {"paper_id": "paper-b", "opportunity_id": "b1"},
+            {"paper_id": "paper-a", "opportunity_id": "a2"},
+        ])
+
+        self.assertEqual(
+            [[item["opportunity_id"] for item in group] for group in grouped],
+            [["a1", "a2"], ["b1"]],
+        )
 
     @mock.patch("app.citation_opportunities.requests.post")
     def test_export_uses_configured_orchestrator_bearer_token(self, post):
@@ -265,9 +339,9 @@ class CitationOpportunityTests(unittest.TestCase):
             "os.environ", {"LOCAL_ORCHESTRATOR_API_TOKEN": "machine-secret"}
         ):
             citation_opportunities.export_bundle(
-                opportunity,
+                [opportunity],
                 {"title": "A paper", "authors": ["A. Author"]},
-                CONTRIBUTION,
+                {"redback": CONTRIBUTION},
                 url="http://127.0.0.1:8775/v1/import-bundles",
             )
 

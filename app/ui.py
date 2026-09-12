@@ -3290,42 +3290,109 @@ def render_citation_opportunities():
         empty_message = f"No opportunities in {view.lower()}."
 
     if displayed:
+        displayed_paper_ids = {item["paper_id"] for item in displayed}
+        displayed = [
+            item for item in all_opportunities
+            if item["paper_id"] in displayed_paper_ids
+            and item["classification"] in {
+                "strong_citation_opportunity", "potentially_useful"
+            }
+        ]
+        paper_groups = citation_opportunities.group_by_paper(displayed)
         summary_rows = []
-        for opportunity in displayed:
+        for group in paper_groups:
+            opportunity = group[0]
             source_paper = papers_by_id.get(
                 opportunity["paper_id"], {"title": opportunity["paper_id"]}
             )
-            matched = by_id.get(
-                opportunity["contribution_id"], {"name": opportunity["contribution_id"]}
-            )
+            matched_names = [
+                by_id.get(item["contribution_id"], {}).get(
+                    "name", item["contribution_id"]
+                )
+                for item in group
+            ]
             summary_rows.append({
-                "Match": "Strong" if opportunity["classification"] == "strong_citation_opportunity" else "Potential",
+                "Match": "Strong" if any(
+                    item["classification"] == "strong_citation_opportunity"
+                    for item in group
+                ) else "Potential",
                 "Paper": source_paper.get("title", opportunity["paper_id"]),
-                "Your work": matched.get("name", opportunity["contribution_id"]),
-                "Confidence": f"{opportunity['confidence']:.0%}",
-                "Status": opportunity["status"].replace("_", " ").title(),
+                "Your works": ", ".join(dict.fromkeys(matched_names)),
+                "Confidence": f"{max(item['confidence'] for item in group):.0%}",
+                "Status": ", ".join(dict.fromkeys(
+                    item["status"].replace("_", " ").title() for item in group
+                )),
             })
         st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+    else:
+        paper_groups = []
     if not displayed:
         st.info(empty_message)
-    for opportunity in displayed:
+    for group in paper_groups:
+        opportunity = group[0]
         source_paper = papers_by_id.get(opportunity["paper_id"], {"title": opportunity["paper_id"], "authors": []})
-        matched = by_id.get(opportunity["contribution_id"], {"name": opportunity["contribution_id"], "canonical_citations": []})
-        match_label = "Strong" if opportunity["classification"] == "strong_citation_opportunity" else "Potential"
-        panel_title = f"{match_label}: {source_paper.get('title')} | {matched.get('name')}"
+        match_label = "Strong" if any(
+            item["classification"] == "strong_citation_opportunity"
+            for item in group
+        ) else "Potential"
+        panel_title = (
+            f"{match_label}: {source_paper.get('title')} | "
+            f"{len(group)} relevant work{'s' if len(group) != 1 else ''}"
+        )
         with st.expander(panel_title, expanded=match_label == "Strong"):
             st.markdown(f"[{source_paper.get('title')}](https://arxiv.org/abs/{opportunity['paper_id']})")
-            st.metric("Confidence", f"{opportunity['confidence']:.0%}")
-            citation = citation_opportunities.preferred_citation(matched)
-            st.markdown(f"**Contribution:** {matched.get('name')}  \n**Preferred citation:** {citation.get('preferred_text') or citation.get('title', 'Not published')}" )
-            st.markdown("**Paper evidence**")
-            for evidence in opportunity.get("evidence", []):
-                st.caption(evidence["locator"])
-                st.info(evidence["quote"])
-            st.markdown(f"**Rationale:** {opportunity['rationale']}")
-            st.markdown(f"**Strongest counterargument:** {opportunity['counterargument']}")
-            with st.expander("Reference check"):
-                st.json(opportunity["reference_check"])
+            st.metric("Highest confidence", f"{max(item['confidence'] for item in group):.0%}")
+            contribution_tabs = st.tabs([
+                by_id.get(item["contribution_id"], {}).get(
+                    "name", item["contribution_id"]
+                )
+                for item in group
+            ])
+            for contribution_tab, item in zip(contribution_tabs, group):
+                matched = by_id.get(
+                    item["contribution_id"],
+                    {"name": item["contribution_id"], "canonical_citations": []},
+                )
+                with contribution_tab:
+                    citation = citation_opportunities.preferred_citation(matched)
+                    st.markdown(
+                        f"**Preferred citation:** "
+                        f"{citation.get('preferred_text') or citation.get('title', 'Not published')}"
+                    )
+                    st.markdown("**Paper evidence**")
+                    for evidence in item.get("evidence", []):
+                        st.caption(evidence["locator"])
+                        st.info(evidence["quote"])
+                    st.markdown(f"**Rationale:** {item['rationale']}")
+                    st.markdown(
+                        f"**Strongest counterargument:** {item['counterargument']}"
+                    )
+                    with st.expander("Reference check"):
+                        st.json(item["reference_check"])
+                    if item["status"] in {"proposed", "needs_review"}:
+                        reject_col, review_col = st.columns(2)
+                        if reject_col.button(
+                            "Not relevant",
+                            key=f"reject_citation_{item['opportunity_id']}",
+                        ):
+                            citation_opportunity_store.update_status(
+                                item["opportunity_id"], "not_relevant"
+                            )
+                            st.rerun()
+                        if review_col.button(
+                            "Needs review",
+                            key=f"review_citation_{item['opportunity_id']}",
+                        ):
+                            citation_opportunity_store.update_status(
+                                item["opportunity_id"], "needs_review"
+                            )
+                            st.rerun()
+                    st.caption(
+                        f"Status: {item['status']} | export: "
+                        f"{item.get('export_status') or 'not exported'}"
+                    )
+                    if item.get("export_error"):
+                        st.warning(item["export_error"])
             contact = source_paper.get("corresponding_author")
             if isinstance(contact, dict) and contact.get("email"):
                 st.success(
@@ -3337,17 +3404,16 @@ def render_citation_opportunities():
             tone_note = st.text_input(
                 "Optional drafting note",
                 placeholder="For example: keep it brief; mention that I also develop Bilby",
-                key=f"citation_tone_{opportunity['opportunity_id']}",
+                key=f"citation_tone_{opportunity['paper_id']}",
             )
-            confirm_col, reject_col, review_col = st.columns(3)
-            can_export = (
-                opportunity["classification"] in {"strong_citation_opportunity", "potentially_useful"}
-                and opportunity["status"] in {"proposed", "needs_review"}
+            can_export = any(
+                item["status"] in {"proposed", "needs_review"} for item in group
             )
-            if confirm_col.button(
-                "Send to Email drafts →",
-                key=f"confirm_citation_{opportunity['opportunity_id']}",
+            if st.button(
+                "Send one combined email to Email drafts →",
+                key=f"confirm_citation_group_{opportunity['paper_id']}",
                 disabled=not can_export,
+                type="primary",
             ):
                 try:
                     if not contact:
@@ -3364,9 +3430,18 @@ def render_citation_opportunities():
                             paper_store.update_paper(
                                 opportunity["paper_id"], {"corresponding_author": contact}
                             )
-                    citation_opportunity_store.update_status(opportunity["opportunity_id"], "confirmed")
-                    confirmed = {**opportunity, "status": "confirmed"}
-                    citation_opportunities.export_bundle(confirmed, source_paper, matched, tone_note=tone_note)
+                    confirmed = []
+                    for item in group:
+                        citation_opportunity_store.update_status(
+                            item["opportunity_id"], "confirmed"
+                        )
+                        confirmed.append({**item, "status": "confirmed"})
+                    citation_opportunities.export_bundle(
+                        confirmed,
+                        source_paper,
+                        by_id,
+                        tone_note=tone_note,
+                    )
                 except Exception as exc:
                     st.error(str(exc))
                 else:
@@ -3377,15 +3452,6 @@ def render_citation_opportunities():
                     )
                     st.success(f"Added to Email drafts.{contact_note}")
                     st.link_button("Continue in Email drafts →", orchestrator_ui)
-            if reject_col.button("Not relevant", key=f"reject_citation_{opportunity['opportunity_id']}"):
-                citation_opportunity_store.update_status(opportunity["opportunity_id"], "not_relevant")
-                st.rerun()
-            if review_col.button("Needs review", key=f"review_citation_{opportunity['opportunity_id']}"):
-                citation_opportunity_store.update_status(opportunity["opportunity_id"], "needs_review")
-                st.rerun()
-            st.caption(f"Status: {opportunity['status']} | export: {opportunity.get('export_status') or 'not exported'}")
-            if opportunity.get("export_error"):
-                st.warning(opportunity["export_error"])
 
 
 def main():

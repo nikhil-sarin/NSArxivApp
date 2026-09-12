@@ -208,12 +208,83 @@ def preferred_citation(contribution: dict) -> dict:
     return citations[0] if citations else {}
 
 
-def build_import_bundle(opportunity: dict, paper: dict, contribution: dict, *, tone_note: str = "") -> dict:
-    """Build the versioned, bounded LocalOrchestrator ImportBundle."""
-    if opportunity.get("status") != "confirmed":
-        raise ValueError("opportunity must be explicitly confirmed before export")
-    paper_id = opportunity["paper_id"]
-    citation = preferred_citation(contribution)
+def group_by_paper(opportunities: list[dict]) -> list[list[dict]]:
+    """Preserve queue order while making one review unit per paper."""
+    grouped: dict[str, list[dict]] = {}
+    for opportunity in opportunities:
+        grouped.setdefault(opportunity["paper_id"], []).append(opportunity)
+    return list(grouped.values())
+
+
+def _group_id(opportunities: list[dict]) -> str:
+    material = "\0".join(sorted(item["opportunity_id"] for item in opportunities))
+    return "cop_group_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
+
+
+def _merged_evidence(
+    opportunities: list[dict], contributions_by_id: dict[str, dict]
+) -> list[dict]:
+    """Keep evidence bounded while retaining at least one passage per match."""
+    merged: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    candidates: list[tuple[dict, dict]] = []
+    for opportunity in opportunities:
+        evidence = opportunity.get("evidence", [])
+        if evidence:
+            candidates.append((opportunity, evidence[0]))
+    for opportunity in opportunities:
+        for evidence in opportunity.get("evidence", [])[1:]:
+            candidates.append((opportunity, evidence))
+    for opportunity, evidence in candidates:
+        contribution = contributions_by_id[opportunity["contribution_id"]]
+        locator = f"{contribution['name']} / {evidence['locator']}"
+        key = (locator, evidence["quote"])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append({"locator": locator, "quote": evidence["quote"]})
+        if len(merged) == 10:
+            break
+    return merged
+
+
+def build_import_bundle(
+    opportunities: list[dict],
+    paper: dict,
+    contributions_by_id: dict[str, dict],
+    *,
+    tone_note: str = "",
+) -> dict:
+    """Build one versioned LocalOrchestrator bundle for all matches to a paper."""
+    if not opportunities:
+        raise ValueError("at least one opportunity is required")
+    if any(item.get("status") != "confirmed" for item in opportunities):
+        raise ValueError("all opportunities must be explicitly confirmed before export")
+    paper_ids = {item["paper_id"] for item in opportunities}
+    if len(paper_ids) != 1:
+        raise ValueError("all opportunities in an email must refer to the same paper")
+    missing = {
+        item["contribution_id"] for item in opportunities
+        if item["contribution_id"] not in contributions_by_id
+    }
+    if missing:
+        raise ValueError(f"unknown contributions: {', '.join(sorted(missing))}")
+
+    paper_id = opportunities[0]["paper_id"]
+    group_id = _group_id(opportunities)
+    contributions = []
+    for contribution_id in dict.fromkeys(
+        item["contribution_id"] for item in opportunities
+    ):
+        contribution = contributions_by_id[contribution_id]
+        citation = preferred_citation(contribution)
+        contributions.append({
+            "id": contribution["id"],
+            "name": contribution["name"],
+            "preferred_citation": citation.get("preferred_text")
+            or citation.get("title", ""),
+            "url": contribution.get("public_url") or citation.get("url", ""),
+        })
     paper_context = {
         "arxiv_id": paper_id, "title": paper.get("title", paper_id),
         "url": f"https://arxiv.org/abs/{paper_id}", "authors": paper.get("authors", []),
@@ -224,40 +295,73 @@ def build_import_bundle(opportunity: dict, paper: dict, contribution: dict, *, t
             "name": str(contact["name"]).strip(),
             "email": str(contact["email"]).strip(),
         }
+    strongest_classification = (
+        "strong_citation_opportunity"
+        if any(
+            item["classification"] == "strong_citation_opportunity"
+            for item in opportunities
+        )
+        else "potentially_useful"
+    )
     context = {
-        "schema_version": "1.0", "catalogue_version": opportunity.get("catalogue_version", "1.0"),
-        "opportunity_id": opportunity["opportunity_id"],
+        "schema_version": "1.1",
+        "catalogue_version": opportunities[0].get("catalogue_version", "1.0"),
+        "opportunity_id": group_id,
+        "opportunity_ids": [item["opportunity_id"] for item in opportunities],
         "paper": paper_context,
-        "contribution": {
-            "id": contribution["id"], "name": contribution["name"],
-            "preferred_citation": citation.get("preferred_text") or citation.get("title", ""),
-            "url": contribution.get("public_url") or citation.get("url", ""),
-        },
-        "classification": opportunity["classification"], "rationale": opportunity["rationale"],
-        "counterargument": opportunity["counterargument"], "evidence": opportunity["evidence"],
+        "contributions": contributions,
+        "classification": strongest_classification,
+        "rationale": "\n".join(
+            f"{contributions_by_id[item['contribution_id']]['name']}: {item['rationale']}"
+            for item in opportunities
+        ),
+        "counterargument": "\n".join(
+            f"{contributions_by_id[item['contribution_id']]['name']}: {item['counterargument']}"
+            for item in opportunities
+        ),
+        "evidence": _merged_evidence(opportunities, contributions_by_id),
+        "citation_request": (
+            "I would kindly ask you to consider citing these works."
+            if len(contributions) > 1
+            else "I would kindly ask you to consider citing this work."
+        ),
         "tone_note": tone_note.strip(),
     }
+    if not context["evidence"]:
+        raise ValueError("at least one evidence passage is required")
     return {
         "schema_version": "1.0",
         "source": {
-            "kind": "paper", "source_system": "nsarxivapp.citation-opportunity",
+            "kind": "paper", "source_system": "nsarxivapp.citation-opportunity-group",
             "external_id": f"arxiv:{paper_id}", "title": paper.get("title", paper_id),
             "author": ", ".join(paper.get("authors", [])), "permalink": f"https://arxiv.org/abs/{paper_id}",
             "trust": "external_untrusted",
-            "metadata": {"arxiv_id": paper_id, "opportunity_id": opportunity["opportunity_id"], "analysis_version": ANALYSIS_VERSION},
+            "metadata": {"arxiv_id": paper_id, "analysis_version": ANALYSIS_VERSION},
         },
         "candidates": [{
-            "external_id": f"{opportunity['opportunity_id']}:draft-email",
-            "text": f"Consider drafting a collegial email about {contribution['name']}'s relevance to this paper",
+            "external_id": f"{group_id}:draft-email",
+            "text": "Consider drafting one collegial email about "
+            + ", ".join(item["name"] for item in contributions)
+            + " and this paper",
             "owner": "Nikhil Sarin", "context": json.dumps(context, separators=(",", ":")),
-            "project_keys": [contribution["id"]], "confidence": opportunity["confidence"],
-            "evidence": [{"locator": item["locator"], "quote": item["quote"]} for item in opportunity["evidence"]],
+            "project_keys": [item["id"] for item in contributions],
+            "confidence": max(item["confidence"] for item in opportunities),
+            "evidence": context["evidence"],
         }],
     }
 
 
-def export_bundle(opportunity: dict, paper: dict, contribution: dict, *, tone_note: str = "", url: str | None = None) -> dict:
-    bundle = build_import_bundle(opportunity, paper, contribution, tone_note=tone_note)
+def export_bundle(
+    opportunities: list[dict],
+    paper: dict,
+    contributions_by_id: dict[str, dict],
+    *,
+    tone_note: str = "",
+    url: str | None = None,
+) -> dict:
+    bundle = build_import_bundle(
+        opportunities, paper, contributions_by_id, tone_note=tone_note
+    )
     endpoint = url or os.getenv("LOCAL_ORCHESTRATOR_URL", "http://127.0.0.1:8775/v1/import-bundles")
     api_token = os.getenv("LOCAL_ORCHESTRATOR_API_TOKEN", "").strip()
     headers = {"Authorization": f"Bearer {api_token}"} if api_token else {}
@@ -266,7 +370,13 @@ def export_bundle(opportunity: dict, paper: dict, contribution: dict, *, tone_no
         response.raise_for_status()
         result = response.json()
     except (requests.RequestException, ValueError) as exc:
-        citation_opportunity_store.record_export(opportunity["opportunity_id"], success=False, error=str(exc))
+        for opportunity in opportunities:
+            citation_opportunity_store.record_export(
+                opportunity["opportunity_id"], success=False, error=str(exc)
+            )
         raise RuntimeError(f"LocalOrchestrator import failed: {exc}") from exc
-    citation_opportunity_store.record_export(opportunity["opportunity_id"], success=True)
+    for opportunity in opportunities:
+        citation_opportunity_store.record_export(
+            opportunity["opportunity_id"], success=True
+        )
     return result
