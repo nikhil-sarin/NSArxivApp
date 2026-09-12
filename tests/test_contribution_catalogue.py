@@ -12,8 +12,22 @@ class ContributionCatalogueTests(unittest.TestCase):
         redback = contribution_catalogue.get(catalogue, "redback")
         self.assertIn("redback software", redback["aliases"])
         self.assertEqual(redback["canonical_citations"][0]["arxiv_id"], "2308.12806")
-        self.assertEqual(len(catalogue["contributions"]), 22)
+        self.assertEqual(len(catalogue["contributions"]), 23)
         self.assertTrue(all(item.get("enabled", True) for item in catalogue["contributions"]))
+        by_id = {item["id"]: item for item in catalogue["contributions"]}
+        self.assertEqual(
+            by_id["postmerger-remnant-review"]["canonical_citations"][0]["title"],
+            "The evolution of binary neutron star post-merger remnants: a review",
+        )
+        self.assertEqual(
+            by_id["nemokid-khz-observatory"]["canonical_citations"][0]["title"],
+            "Multimessenger astronomy with a kHz-band gravitational-wave observatory",
+        )
+        magnetar = by_id["magnetar-driven-ejecta-foundation"]
+        self.assertEqual(
+            magnetar["canonical_citations"][0]["bibcode"],
+            "2022MNRAS.516.4949S",
+        )
 
     def test_duplicate_and_missing_identifier_errors_include_id(self):
         entry = {

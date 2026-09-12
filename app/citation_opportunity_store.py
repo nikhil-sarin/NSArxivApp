@@ -147,6 +147,19 @@ def update_status(opportunity_id: str, status: str) -> None:
         db.execute("UPDATE citation_opportunities SET status=?, updated_at=? WHERE opportunity_id=?", (status, _now(), opportunity_id))
 
 
+def replace_active_for_paper(paper_id: str, replacement_ids: list[str]) -> None:
+    """Retire a paper's old queue entries after a replacement bundle is created."""
+    placeholders = ",".join("?" for _ in replacement_ids)
+    exclusion = f"AND opportunity_id NOT IN ({placeholders})" if replacement_ids else ""
+    with research_db.transaction() as db:
+        db.execute(
+            "UPDATE citation_opportunities SET status='not_relevant', updated_at=? "
+            "WHERE paper_id=? AND status IN ('proposed', 'needs_review', 'confirmed') "
+            f"{exclusion}",
+            (_now(), paper_id, *replacement_ids),
+        )
+
+
 def record_export(opportunity_id: str, *, success: bool, error: str = "") -> None:
     with research_db.transaction() as db:
         db.execute(

@@ -3354,11 +3354,22 @@ def render_citation_opportunities():
                     {"name": item["contribution_id"], "canonical_citations": []},
                 )
                 with contribution_tab:
-                    citation = citation_opportunities.preferred_citation(matched)
-                    st.markdown(
-                        f"**Preferred citation:** "
-                        f"{citation.get('preferred_text') or citation.get('title', 'Not published')}"
-                    )
+                    citations = matched.get("canonical_citations", [])
+                    if citations:
+                        for citation in citations:
+                            citation_text = (
+                                citation.get("preferred_text")
+                                or citation.get("title", "Not published")
+                            )
+                            if citation.get("url"):
+                                st.markdown(
+                                    f"**Preferred citation:** "
+                                    f"[{citation_text}]({citation['url']})"
+                                )
+                            else:
+                                st.markdown(f"**Preferred citation:** {citation_text}")
+                    else:
+                        st.markdown("**Preferred citation:** Not published")
                     st.markdown("**Paper evidence**")
                     for evidence in item.get("evidence", []):
                         st.caption(evidence["locator"])
@@ -3393,6 +3404,119 @@ def render_citation_opportunities():
                     )
                     if item.get("export_error"):
                         st.warning(item["export_error"])
+            with st.expander("Edit or recreate this bundle", expanded=False):
+                label_by_id = {
+                    item["id"]: item.get("name", item["id"])
+                    for item in contributions
+                }
+                id_by_label = {label: item_id for item_id, label in label_by_id.items()}
+                existing_by_contribution = {
+                    item["contribution_id"]: item for item in group
+                }
+                selected_labels = st.multiselect(
+                    "Relevant works",
+                    list(id_by_label),
+                    default=[
+                        label_by_id[item["contribution_id"]]
+                        for item in group
+                        if item["contribution_id"] in label_by_id
+                    ],
+                    key=f"recreate_works_{opportunity['paper_id']}",
+                )
+                edited_entries = []
+                if selected_labels:
+                    edit_tabs = st.tabs(selected_labels)
+                    for edit_tab, selected_label in zip(edit_tabs, selected_labels):
+                        contribution_id = id_by_label[selected_label]
+                        existing = existing_by_contribution.get(contribution_id, {})
+                        existing_evidence = existing.get("evidence", [{}])[0]
+                        with edit_tab:
+                            edited_strength = st.selectbox(
+                                "Match strength",
+                                ["Strong citation opportunity", "Potentially useful"],
+                                index=(
+                                    0 if existing.get("classification")
+                                    == "strong_citation_opportunity" else 1
+                                ),
+                                key=f"recreate_strength_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                            edited_confidence = st.slider(
+                                "Confidence", 0.0, 1.0,
+                                value=float(existing.get("confidence", 0.8)), step=0.05,
+                                key=f"recreate_confidence_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                            edited_rationale = st.text_area(
+                                "Scientific connection",
+                                value=existing.get("rationale", ""),
+                                key=f"recreate_rationale_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                            edited_counterargument = st.text_area(
+                                "Strongest counterargument",
+                                value=existing.get(
+                                    "counterargument",
+                                    "The authors may have made a reasonable independent methodological choice.",
+                                ),
+                                key=f"recreate_counterargument_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                            edited_locator = st.text_input(
+                                "Evidence location",
+                                value=existing_evidence.get("locator", ""),
+                                key=f"recreate_locator_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                            edited_quote = st.text_area(
+                                "Exact evidence quote from the paper",
+                                value=existing_evidence.get("quote", ""),
+                                key=f"recreate_quote_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                        edited_entries.append({
+                            "contribution": by_id[contribution_id],
+                            "classification": (
+                                "strong_citation_opportunity"
+                                if edited_strength == "Strong citation opportunity"
+                                else "potentially_useful"
+                            ),
+                            "confidence": edited_confidence,
+                            "rationale": edited_rationale,
+                            "counterargument": edited_counterargument,
+                            "evidence_locator": edited_locator,
+                            "evidence_quote": edited_quote,
+                        })
+                if st.button(
+                    "Replace bundle with these edits",
+                    key=f"recreate_bundle_{opportunity['paper_id']}",
+                    disabled=not selected_labels,
+                ):
+                    try:
+                        with st.spinner("Validating edited evidence against the paper..."):
+                            full_text = _get_paper_text(opportunity["paper_id"], source_paper)
+                        evidence_source = "\n\n".join(
+                            part for part in (
+                                full_text, str(source_paper.get("abstract", ""))
+                            ) if part.strip()
+                        )
+                        for entry in edited_entries:
+                            packet = citation_evidence.build_evidence_packet(
+                                opportunity["paper_id"], full_text,
+                                entry["contribution"],
+                                owner_name_variants=catalogue.get(
+                                    "owner_name_variants", [catalogue["owner"]]
+                                ),
+                                corpus_chunks=research_db.documents_for_owner(
+                                    "paper_content", opportunity["paper_id"]
+                                ),
+                            )
+                            entry["reference_check"] = packet["reference_check"]
+                        citation_opportunities.recreate_manual_bundle(
+                            paper_id=opportunity["paper_id"],
+                            entries=edited_entries,
+                            catalogue_version=catalogue["schema_version"],
+                            paper_text=evidence_source,
+                        )
+                    except Exception as exc:
+                        st.error(f"Could not recreate bundle: {exc}")
+                    else:
+                        st.success("Bundle replaced. Review it, then send the combined email.")
+                        st.rerun()
             contact = source_paper.get("corresponding_author")
             if isinstance(contact, dict) and contact.get("email"):
                 st.success(

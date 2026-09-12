@@ -116,6 +116,38 @@ class CitationOpportunityTests(unittest.TestCase):
                 reference_check={"canonical_citation_found": False},
             )
 
+    def test_recreate_manual_bundle_replaces_old_match(self):
+        old = citation_opportunities.create_manual(
+            paper_id="2609.09520", contribution=CONTRIBUTION,
+            catalogue_version="1.2", classification="potentially_useful",
+            confidence=0.7, rationale="Old rationale",
+            counterargument="May not apply", evidence_quote="Exact old evidence.",
+            evidence_locator="Abstract", paper_text="Exact old evidence.",
+            reference_check={"canonical_citation_found": False},
+        )
+        replacement = {
+            "contribution": CONTRIBUTION,
+            "classification": "strong_citation_opportunity",
+            "confidence": 0.95,
+            "rationale": "Updated rationale",
+            "counterargument": "The existing model may be sufficient.",
+            "evidence_quote": "Exact replacement evidence.",
+            "evidence_locator": "Methods",
+            "reference_check": {"canonical_citation_found": False},
+        }
+
+        created = citation_opportunities.recreate_manual_bundle(
+            paper_id="2609.09520", entries=[replacement],
+            catalogue_version="1.2", paper_text="Exact replacement evidence.",
+        )
+
+        rows = {
+            row["opportunity_id"]: row
+            for row in citation_opportunity_store.list_opportunities(limit=10)
+        }
+        self.assertEqual(rows[old["opportunity_id"]]["status"], "not_relevant")
+        self.assertEqual(rows[created[0]["opportunity_id"]]["status"], "proposed")
+
     def test_actionable_queue_is_not_crowded_out_by_newer_negative_results(self):
         base = {
             "analysis_version": "2", "catalogue_version": "1.0", "confidence": 0.5,
@@ -259,6 +291,10 @@ class CitationOpportunityTests(unittest.TestCase):
         self.assertEqual(context["paper"]["arxiv_id"], "2609.1")
         self.assertEqual(context["paper"]["corresponding_author"]["email"], "author@example.edu")
         self.assertEqual(context["contributions"][0]["url"], "https://example.org/redback")
+        self.assertEqual(
+            context["contributions"][0]["citations"],
+            [{"preferred_citation": "Sarin et al. 2024", "url": "https://doi.org/example"}],
+        )
         self.assertEqual(context["evidence"][0]["quote"], PACKET["passages"][0]["quote"])
         self.assertEqual(
             context["citation_request"],
@@ -316,6 +352,74 @@ class CitationOpportunityTests(unittest.TestCase):
             context["citation_request"],
             "I would kindly ask you to consider citing these works.",
         )
+
+    def test_export_bounds_source_author_but_preserves_context_authors(self):
+        authors = [f"Author {index} With A Long Name" for index in range(30)]
+        opportunity = {
+            "opportunity_id": "cop_1", "paper_id": "2609.1",
+            "contribution_id": "redback", "catalogue_version": "1.2",
+            "classification": "strong_citation_opportunity", "confidence": 0.9,
+            "rationale": "Relevant", "counterargument": "May not apply",
+            "evidence": PACKET["passages"], "status": "confirmed",
+        }
+
+        bundle = citation_opportunities.build_import_bundle(
+            [opportunity], {"title": "A paper", "authors": authors},
+            {"redback": CONTRIBUTION},
+        )
+
+        self.assertLessEqual(len(bundle["source"]["author"]), 500)
+        self.assertTrue(bundle["source"]["author"].endswith("et al."))
+        self.assertEqual(
+            json.loads(bundle["candidates"][0]["context"])["paper"]["authors"],
+            authors,
+        )
+
+    @mock.patch("app.citation_opportunities.requests.post")
+    def test_export_surfaces_validation_response(self, post):
+        response = post.return_value
+        response.text = '{"detail":"author too long"}'
+        response.raise_for_status.side_effect = __import__("requests").HTTPError(
+            "422 Client Error", response=response
+        )
+        opportunity = {
+            "opportunity_id": "cop_1", "paper_id": "2609.1",
+            "contribution_id": "redback", "catalogue_version": "1.2",
+            "classification": "strong_citation_opportunity", "confidence": 0.9,
+            "rationale": "Relevant", "counterargument": "May not apply",
+            "evidence": PACKET["passages"], "status": "confirmed",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "author too long"):
+            citation_opportunities.export_bundle(
+                [opportunity], {"title": "A paper", "authors": ["A. Author"]},
+                {"redback": CONTRIBUTION}, url="http://localhost/import",
+            )
+
+    def test_replacing_bundle_retires_old_active_matches(self):
+        base = {
+            "paper_id": "2609.1", "analysis_version": "manual-1",
+            "catalogue_version": "1.2", "classification": "potentially_useful",
+            "confidence": 0.8, "rationale": "Relevant", "counterargument": "Maybe",
+            "evidence": PACKET["passages"], "reference_check": {}, "model": {},
+        }
+        citation_opportunity_store.save({
+            **base, "opportunity_id": "old", "contribution_id": "redback",
+            "status": "confirmed",
+        })
+        citation_opportunity_store.save({
+            **base, "opportunity_id": "new", "contribution_id": "mass-loss",
+            "status": "proposed",
+        })
+
+        citation_opportunity_store.replace_active_for_paper("2609.1", ["new"])
+
+        rows = {
+            row["opportunity_id"]: row
+            for row in citation_opportunity_store.list_opportunities(limit=10)
+        }
+        self.assertEqual(rows["old"]["status"], "not_relevant")
+        self.assertEqual(rows["new"]["status"], "proposed")
 
     def test_grouping_preserves_paper_and_queue_order(self):
         grouped = citation_opportunities.group_by_paper([

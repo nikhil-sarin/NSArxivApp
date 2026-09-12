@@ -77,6 +77,39 @@
       "contact_framing": "Share the directly relevant mixing or neutron-rich-ejecta result without implying that citation is obligatory."
     },
     {
+      "id": "magnetar-driven-ejecta-foundation",
+      "name": "Magnetar-driven ejecta model foundation",
+      "kind": "model-and-software",
+      "canonical_citations": [{
+        "title": "On the diversity of magnetar-driven kilonovae",
+        "doi": "10.1093/mnras/stac2609",
+        "arxiv_id": "2205.14159",
+        "bibcode": "2022MNRAS.516.4949S",
+        "preferred_text": "Sarin et al. (2022), MNRAS 516, 4949",
+        "url": "https://doi.org/10.1093/mnras/stac2609"
+      }],
+      "aliases": ["magnetar driven ejecta", "magnetar driven transient diversity", "magnetar ejecta redback"],
+      "strong_signals": ["general magnetar driven supernova redback", "magnetar powered supernova lightcurve inference", "magnetar energy injection supernova ejecta dynamics"],
+      "weak_signals": ["central engine powered ic bl supernova", "magnetar powered supernova", "rapidly spinning magnetized neutron star supernova"],
+      "discovery_rules": [{
+        "name": "Magnetar central engine is fitted to a supernova light curve",
+        "strength": "strong",
+        "all": [
+          ["magnetar", "magnetized neutron star"],
+          ["supernova", "ic-bl", "slsn"],
+          ["light curve", "bolometric", "parameter inference", "best fit"]
+        ],
+        "preferred_evidence": ["magnetar", "energy injection", "best fit", "light curve"]
+      }],
+      "key_claims": [
+        "Sarin et al. (2022) supplies the magnetar-driven ejecta framework underlying the generalized Redback supernova model.",
+        "The model couples magnetar energy injection to ejecta dynamics and includes thermalization losses that affect the inferred engine parameters."
+      ],
+      "exclusions": ["magnetar powered kilonova without supernova ejecta", "gamma ray burst plateau without a supernova light curve"],
+      "public_url": "https://doi.org/10.1093/mnras/stac2609",
+      "contact_framing": "Share the missing ejecta-model foundation where a paper uses the later generalized supernova implementation."
+    },
+    {
       "id": "generalised-csm-framework",
       "name": "Generalised CSM-interaction framework",
       "kind": "software-and-method",
@@ -343,7 +376,7 @@
       "name": "Evolution of binary neutron-star post-merger remnants",
       "kind": "review",
       "canonical_citations": [{
-        "title": "The evolution of binary neutron star post-merger remnants",
+        "title": "The evolution of binary neutron star post-merger remnants: a review",
         "arxiv_id": "2012.08172",
         "preferred_text": "Sarin & Lasky (2021), General Relativity and Gravitation",
         "url": "https://arxiv.org/abs/2012.08172"
@@ -394,7 +427,7 @@
       "name": "NEMO and the science case for a kilohertz GW observatory",
       "kind": "instrument-science-case",
       "canonical_citations": [{
-        "title": "NEMO: A proposed gravitational-wave detector for the kilohertz band",
+        "title": "Multimessenger astronomy with a kHz-band gravitational-wave observatory",
         "arxiv_id": "2110.10892",
         "preferred_text": "Sarin & Lasky (2022), Publications of the Astronomical Society of Australia",
         "url": "https://arxiv.org/abs/2110.10892"

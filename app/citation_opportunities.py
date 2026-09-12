@@ -35,7 +35,7 @@ def _normalized_evidence(text: str) -> str:
     return re.sub(r"\s+", " ", str(text)).strip().casefold()
 
 
-def create_manual(
+def _build_manual(
     *,
     paper_id: str,
     contribution: dict,
@@ -49,7 +49,7 @@ def create_manual(
     paper_text: str,
     reference_check: dict,
 ) -> dict:
-    """Create an evidence-grounded opportunity from an explicit user judgement."""
+    """Validate and build an evidence-grounded explicit user judgement."""
     if not str(paper_id).strip() or not str(contribution.get("id", "")).strip():
         raise ValueError("paper and contribution IDs are required")
     if classification not in {"strong_citation_opportunity", "potentially_useful"}:
@@ -98,8 +98,48 @@ def create_manual(
         "created_at": now,
         "updated_at": now,
     }
+    return result
+
+
+def create_manual(**kwargs) -> dict:
+    """Create one evidence-grounded opportunity from an explicit user judgement."""
+    result = _build_manual(**kwargs)
     citation_opportunity_store.save(result)
     return result
+
+
+def recreate_manual_bundle(
+    *,
+    paper_id: str,
+    entries: list[dict],
+    catalogue_version: str,
+    paper_text: str,
+) -> list[dict]:
+    """Replace a paper's active matches with a fully user-edited set."""
+    if not entries:
+        raise ValueError("select at least one relevant work")
+    created = [
+        _build_manual(
+            paper_id=paper_id,
+            contribution=entry["contribution"],
+            catalogue_version=catalogue_version,
+            classification=entry["classification"],
+            confidence=entry["confidence"],
+            rationale=entry["rationale"],
+            counterargument=entry["counterargument"],
+            evidence_quote=entry["evidence_quote"],
+            evidence_locator=entry["evidence_locator"],
+            paper_text=paper_text,
+            reference_check=entry["reference_check"],
+        )
+        for entry in entries
+    ]
+    for opportunity in created:
+        citation_opportunity_store.save(opportunity)
+    citation_opportunity_store.replace_active_for_paper(
+        paper_id, [item["opportunity_id"] for item in created]
+    )
+    return created
 
 
 def _parse_model_json(raw: str) -> dict:
@@ -208,6 +248,35 @@ def preferred_citation(contribution: dict) -> dict:
     return citations[0] if citations else {}
 
 
+def verified_citations(contribution: dict) -> list[dict]:
+    """Return every complete citation that can be safely included in a draft."""
+    return [
+        {
+            "preferred_citation": citation.get("preferred_text")
+            or citation.get("title", ""),
+            "url": citation.get("url", ""),
+        }
+        for citation in contribution.get("canonical_citations", [])
+        if (citation.get("preferred_text") or citation.get("title"))
+        and str(citation.get("url", "")).startswith("https://")
+    ]
+
+
+def _bounded_author_summary(authors: list[str], max_length: int = 500) -> str:
+    """Keep source display metadata valid without truncating citation context authors."""
+    joined = ", ".join(str(author) for author in authors)
+    if len(joined) <= max_length:
+        return joined
+    suffix = ", et al."
+    kept: list[str] = []
+    for author in authors:
+        candidate = ", ".join([*kept, str(author)]) + suffix
+        if len(candidate) > max_length:
+            break
+        kept.append(str(author))
+    return ", ".join(kept) + suffix
+
+
 def group_by_paper(opportunities: list[dict]) -> list[list[dict]]:
     """Preserve queue order and keep one current match per paper/contribution."""
     grouped: dict[str, list[dict]] = {}
@@ -283,12 +352,14 @@ def build_import_bundle(
     ):
         contribution = contributions_by_id[contribution_id]
         citation = preferred_citation(contribution)
+        citations = verified_citations(contribution)
         contributions.append({
             "id": contribution["id"],
             "name": contribution["name"],
             "preferred_citation": citation.get("preferred_text")
             or citation.get("title", ""),
             "url": contribution.get("public_url") or citation.get("url", ""),
+            "citations": citations,
         })
     paper_context = {
         "arxiv_id": paper_id, "title": paper.get("title", paper_id),
@@ -339,7 +410,7 @@ def build_import_bundle(
         "source": {
             "kind": "paper", "source_system": "nsarxivapp.citation-opportunity-group",
             "external_id": f"arxiv:{paper_id}", "title": paper.get("title", paper_id),
-            "author": ", ".join(paper.get("authors", [])), "permalink": f"https://arxiv.org/abs/{paper_id}",
+            "author": _bounded_author_summary(paper.get("authors", [])), "permalink": f"https://arxiv.org/abs/{paper_id}",
             "trust": "external_untrusted",
             "metadata": {"arxiv_id": paper_id, "analysis_version": ANALYSIS_VERSION},
         },
@@ -375,11 +446,15 @@ def export_bundle(
         response.raise_for_status()
         result = response.json()
     except (requests.RequestException, ValueError) as exc:
+        detail = str(exc)
+        response = getattr(exc, "response", None)
+        if response is not None and response.text.strip():
+            detail = f"{detail}: {response.text.strip()[:1500]}"
         for opportunity in opportunities:
             citation_opportunity_store.record_export(
-                opportunity["opportunity_id"], success=False, error=str(exc)
+                opportunity["opportunity_id"], success=False, error=detail
             )
-        raise RuntimeError(f"LocalOrchestrator import failed: {exc}") from exc
+        raise RuntimeError(f"LocalOrchestrator import failed: {detail}") from exc
     for opportunity in opportunities:
         citation_opportunity_store.record_export(
             opportunity["opportunity_id"], success=True
