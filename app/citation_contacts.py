@@ -6,6 +6,7 @@ import gzip
 import io
 import re
 import tarfile
+from urllib.parse import urlencode
 
 import requests
 
@@ -128,3 +129,12 @@ def display_name(contact: dict) -> str:
         if not name or name.casefold() in PLACEHOLDER_CONTACT_NAMES
         else name
     )
+
+
+def mailto_url(contact: dict, arxiv_id: str) -> str:
+    """Build a mail-client link with a deterministic paper-specific subject."""
+    email = str(contact.get("email", "")).strip()
+    if not _valid_email(email):
+        raise ValueError("a valid public contact email is required")
+    subject = f'On your paper "arXiv:{arxiv_id}"'
+    return f"mailto:{email}?{urlencode({'subject': subject})}"

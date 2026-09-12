@@ -45,3 +45,11 @@ def test_rendered_email_is_retained_when_source_lookup_fails():
 
 def test_no_email_returns_none():
     assert citation_contacts.contact_from_text("No public contact here") is None
+
+
+def test_mailto_url_contains_contact_and_paper_subject():
+    url = citation_contacts.mailto_url(
+        {"email": "person@institute.edu"}, "2609.08324"
+    )
+    assert url.startswith("mailto:person@institute.edu?")
+    assert "subject=On+your+paper+%22arXiv%3A2609.08324%22" in url

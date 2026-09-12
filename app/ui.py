@@ -3399,6 +3399,10 @@ def render_citation_opportunities():
                     f"Public corresponding-author contact: {citation_contacts.display_name(contact)} "
                     f"({contact['email']})"
                 )
+                st.link_button(
+                    "Open mail client",
+                    citation_contacts.mailto_url(contact, opportunity["paper_id"]),
+                )
             else:
                 st.caption("A public corresponding-author email will be looked up from the arXiv source when you continue.")
             tone_note = st.text_input(
