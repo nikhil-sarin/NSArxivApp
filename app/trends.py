@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import math
 import re
+import json
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+
+import numpy as np
+
+from app import research_db
 
 
 STOPWORDS = {
@@ -110,3 +115,115 @@ def emerging_themes(papers: list[dict], *, recent_days: int = 90, limit: int = 2
         key=lambda row: (" " in row["theme"], row["score"], row["recent_papers"]),
         reverse=True,
     )[:limit]
+
+
+def _normalized_vector(value) -> np.ndarray | None:
+    vector = np.asarray(value, dtype=float)
+    norm = np.linalg.norm(vector)
+    return vector / norm if vector.size and norm else None
+
+
+def _cluster_label(papers: list[dict]) -> str:
+    counts: Counter = Counter()
+    for paper in papers:
+        _, title_terms = _terms(paper)
+        counts.update(title_terms)
+    if not counts:
+        return "related papers"
+    return sorted(
+        counts,
+        key=lambda term: (counts[term], " " in term, len(term)),
+        reverse=True,
+    )[0]
+
+
+def semantic_theme_clusters(
+    papers: list[dict],
+    *,
+    interest_text: str,
+    encode,
+    recent_days: int = 90,
+    similarity_threshold: float = 0.58,
+    relevance_threshold: float = 0.22,
+    limit: int = 12,
+    now=None,
+) -> list[dict]:
+    """Cluster recent papers semantically and retain profile-relevant groups."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=recent_days)
+    recent = [
+        paper for paper in papers
+        if (published := _date(paper.get("published"))) and cutoff <= published <= now
+    ]
+    if not recent or not interest_text.strip():
+        return []
+    profile_vector = _normalized_vector(encode(interest_text))
+    if profile_vector is None:
+        return []
+
+    clusters: list[dict] = []
+    for paper in recent:
+        text = f"{paper.get('title', '')}. {paper.get('abstract', '') or paper.get('summary', '')}"
+        vector = _normalized_vector(encode(text))
+        if vector is None or vector.shape != profile_vector.shape:
+            continue
+        best_index = -1
+        best_similarity = -1.0
+        for index, cluster in enumerate(clusters):
+            similarity = float(np.dot(vector, cluster["centroid"]))
+            if similarity > best_similarity:
+                best_index, best_similarity = index, similarity
+        if best_index >= 0 and best_similarity >= similarity_threshold:
+            cluster = clusters[best_index]
+            cluster["papers"].append(paper)
+            cluster["vectors"].append(vector)
+            cluster["centroid"] = _normalized_vector(np.mean(cluster["vectors"], axis=0))
+        else:
+            clusters.append({"papers": [paper], "vectors": [vector], "centroid": vector})
+
+    rows = []
+    for cluster in clusters:
+        if len(cluster["papers"]) < 2:
+            continue
+        relevance = float(np.dot(cluster["centroid"], profile_vector))
+        if relevance < relevance_threshold:
+            continue
+        label = _cluster_label(cluster["papers"])
+        rows.append({
+            "theme": label,
+            "paper_count": len(cluster["papers"]),
+            "relevance": round(relevance, 3),
+            "examples": [
+                {
+                    "arxiv_id": str(paper.get("arxiv_id", "")),
+                    "title": str(paper.get("title", paper.get("arxiv_id", "Untitled"))),
+                }
+                for paper in cluster["papers"][:4]
+            ],
+        })
+    return sorted(rows, key=lambda row: (row["relevance"], row["paper_count"]), reverse=True)[:limit]
+
+
+def load_feedback() -> dict[str, str]:
+    db = research_db.connect()
+    try:
+        row = db.execute("SELECT value_json FROM settings WHERE key='trend_feedback'").fetchone()
+        return json.loads(row[0]) if row else {}
+    finally:
+        db.close()
+
+
+def save_feedback(theme: str, state: str) -> None:
+    if state not in {"follow", "mute", ""}:
+        raise ValueError("trend feedback must be follow, mute, or empty")
+    feedback = load_feedback()
+    if state:
+        feedback[theme] = state
+    else:
+        feedback.pop(theme, None)
+    with research_db.transaction() as db:
+        db.execute(
+            "INSERT INTO settings(key, value_json, updated_at) VALUES('trend_feedback', ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+            (json.dumps(feedback), datetime.now(timezone.utc).isoformat()),
+        )

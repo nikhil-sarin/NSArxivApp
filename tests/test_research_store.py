@@ -82,6 +82,34 @@ class ResearchStoreTests(unittest.TestCase):
         )
         self.assertEqual(len(paper_store.load_all_papers()), 2)
 
+    def test_reading_library_supports_counted_stable_pages(self):
+        for index in range(5):
+            paper_store.save_paper(
+                f"2601.1000{index}",
+                {"arxiv_id": f"2601.1000{index}", "title": f"Paper {index}"},
+                "Summary",
+            )
+        page = paper_store.load_reading_page(offset=1, limit=2)
+        self.assertEqual(paper_store.count_reading_papers(), 5)
+        self.assertEqual(len(page), 2)
+        self.assertEqual(
+            paper_store.get_papers([page[1]["arxiv_id"], page[0]["arxiv_id"]]),
+            [page[1], page[0]],
+        )
+
+    def test_query_indexes_are_installed_by_schema_migration(self):
+        db = research_db.connect()
+        try:
+            indexes = {
+                row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            }
+        finally:
+            db.close()
+        self.assertIn("idx_jobs_status_created", indexes)
+        self.assertIn("idx_citations_status_classification", indexes)
+
     def test_versionless_id_resolves_to_stored_version_and_triage(self):
         paper_store.save_paper(
             "2601.00012v2",

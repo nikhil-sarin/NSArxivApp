@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from app import evaluation, index_jobs, paper_store, privacy, research_db, synthesis, trends
+from app import evaluation, index_jobs, job_queue, maintenance, paper_store, privacy, research_db, synthesis, trends
 from app.corpus_index import index_text_record
 
 
@@ -133,6 +133,68 @@ class ResearchOpsTests(unittest.TestCase):
                 time.sleep(0.02)
         self.assertEqual(job["status"], "completed")
         self.assertEqual(job["result"]["chunks_written"], 2)
+
+    def test_interrupted_jobs_are_requeued(self):
+        with research_db.transaction() as db:
+            db.execute(
+                "INSERT INTO jobs(job_id, kind, status, created_at, updated_at) "
+                "VALUES('interrupted', 'test', 'running', 'now', 'now')"
+            )
+        self.assertEqual(job_queue.recover_interrupted(), 1)
+        db = research_db.connect()
+        try:
+            status = db.execute("SELECT status FROM jobs WHERE job_id='interrupted'").fetchone()[0]
+        finally:
+            db.close()
+        self.assertEqual(status, "queued")
+
+    def test_semantic_clusters_are_filtered_by_profile_relevance(self):
+        now = datetime.now(timezone.utc)
+        papers = [
+            {
+                "arxiv_id": "2609.11",
+                "title": "Kilonova ejecta inference",
+                "abstract": "Transient ejecta and opacity modelling",
+                "published": (now - timedelta(days=3)).isoformat(),
+            },
+            {
+                "arxiv_id": "2609.12",
+                "title": "Kilonova opacity constraints",
+                "abstract": "Transient ejecta inference",
+                "published": (now - timedelta(days=5)).isoformat(),
+            },
+            {
+                "arxiv_id": "2609.13",
+                "title": "Black hole thermodynamics",
+                "abstract": "Entropy and geometry",
+                "published": (now - timedelta(days=4)).isoformat(),
+            },
+        ]
+
+        def encode(text):
+            lower = text.lower()
+            return [1.0, 0.0] if "kilonova" in lower or "transient" in lower else [0.0, 1.0]
+
+        rows = trends.semantic_theme_clusters(
+            papers,
+            interest_text="kilonova transient inference",
+            encode=encode,
+            now=now,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["paper_count"], 2)
+
+    def test_database_backup_and_restore(self):
+        paper_store.save_paper(
+            "2609.20",
+            {"arxiv_id": "2609.20", "title": "Original"},
+            "Original summary",
+        )
+        backup_path = Path(self.tempdir.name) / "snapshot.db"
+        maintenance.backup_database(backup_path)
+        paper_store.update_paper("2609.20", {"title": "Changed"})
+        maintenance.restore_database(backup_path)
+        self.assertEqual(paper_store.get_paper("2609.20")["title"], "Original")
 
 
 if __name__ == "__main__":

@@ -2,24 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
-import threading
-import uuid
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 
 from app import citation_evidence, citation_opportunities, citation_opportunity_store
-from app import contribution_catalogue, privacy, research_db
+from app import contribution_catalogue, job_queue, paper_store, privacy, research_db
 from app.summarizer import PaperSummarizer
-
-
-_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="citation-discovery")
-_LOCK = threading.Lock()
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def enabled() -> bool:
@@ -86,36 +73,38 @@ def discover_paper(paper: dict, paper_text: str, *, force: bool = False) -> dict
     return {"paper_id": paper_id, "checked": checked, "model_judgements": judged, "reviewable": reviewable}
 
 
-def _set_job(job_id: str, status: str, *, result: dict | None = None, error: str = "") -> None:
-    with research_db.transaction() as db:
-        db.execute(
-            "UPDATE jobs SET status=?, result_json=?, error=?, updated_at=? WHERE job_id=?",
-            (status, json.dumps(result or {}), error[:2000], _now(), job_id),
+def _run(payload: dict, runtime: dict) -> dict:
+    paper_id = str(payload.get("paper_id", ""))
+    paper = runtime.get("paper") or paper_store.get_paper(paper_id)
+    if not paper:
+        raise ValueError(f"Paper {paper_id} is no longer available")
+    paper_text = str(runtime.get("paper_text", ""))
+    if not paper_text:
+        from pathlib import Path
+        from app.arxiv_client import ArxivClient
+        from app.paper_text import get_paper_text
+        from app.pdf_extractor import PDFExtractor
+        paper_text = get_paper_text(
+            paper_id,
+            ArxivClient(),
+            PDFExtractor(),
+            title=paper.get("title"),
+            pdf_url=paper.get("pdf_url"),
+            cache_dir=Path("data/papers"),
         )
-
-
-def _run(job_id: str, paper: dict, paper_text: str, force: bool) -> None:
-    _set_job(job_id, "running")
-    try:
-        result = discover_paper(paper, paper_text, force=force)
-    except Exception as exc:
-        _set_job(job_id, "failed", error=str(exc))
-    else:
-        _set_job(job_id, "completed", result=result)
+    return discover_paper(paper, paper_text, force=bool(payload.get("force")))
 
 
 def enqueue_paper(paper: dict, paper_text: str, *, force: bool = False) -> str | None:
     """Queue automatic discovery without delaying an interactive paper ingest."""
     if not enabled() or not paper_text.strip():
         return None
-    job_id = str(uuid.uuid4())
     payload = {"paper_id": paper.get("arxiv_id", ""), "force": force}
-    with research_db.transaction() as db:
-        db.execute(
-            "INSERT INTO jobs(job_id, kind, status, payload_json, created_at, updated_at) "
-            "VALUES(?, 'citation_discovery', 'queued', ?, ?, ?)",
-            (job_id, json.dumps(payload), _now(), _now()),
-        )
-    with _LOCK:
-        _EXECUTOR.submit(_run, job_id, dict(paper), paper_text, force)
-    return job_id
+    return job_queue.enqueue(
+        "citation_discovery",
+        payload,
+        runtime={"paper": dict(paper), "paper_text": paper_text},
+    )
+
+
+job_queue.register("citation_discovery", _run)

@@ -32,6 +32,12 @@ cd NSArxivApp
 pip install -r requirements.txt
 ```
 
+For an editable development installation with test and lint tools:
+
+```bash
+pip install -e '.[dev]'
+```
+
 Copy and configure the environment file:
 ```bash
 cp .env.example .env   # or edit .env directly
@@ -358,6 +364,34 @@ Run the standard-library test suite with the Python environment used by the app:
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+CI runs the same suite on Python 3.10 and 3.12 for every pull request.
+
+## Maintenance
+
+Long-running indexing, citation discovery, and summary-regeneration work is stored in SQLite. The app requeues a job that was running when its process stopped and resumes it after startup. Job progress and failures are visible under **Library Health → Search index**.
+
+Run local configuration and storage diagnostics without sending any network requests:
+
+```bash
+python -m app.maintenance doctor
+```
+
+Create a consistent SQLite backup (the default retains the latest 14 backups):
+
+```bash
+python -m app.maintenance backup
+```
+
+Restore a backup while the Streamlit app is stopped:
+
+```bash
+python -m app.maintenance restore --from data/backups/research-YYYYMMDDTHHMMSSZ.db --yes
+```
+
+The database is also backed up automatically before a schema migration. PDF caches, generated reports, and Chroma indexes are reproducible and are not included in the SQLite backup.
+
+Generated summaries now record provider, model, input source, workflow version, completion state, and fallback reason. Existing summaries remain readable and are labelled as legacy records until regenerated.
 
 ## Troubleshooting
 

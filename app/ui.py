@@ -27,7 +27,7 @@ from app.vector_db import PaperVectorDB
 from app import paper_store
 from app.paper_text import get_paper_text
 from app.report_generator import ReportUnavailable, generate_report
-from app.summary_workflow import completeness_issues, summarize_with_fallback
+from app.summary_workflow import completeness_issues, summarize_with_fallback, summarize_with_provenance
 from app.tex_extractor import fetch_html_text
 from app import researcher_profile
 from app import idea_store
@@ -41,6 +41,10 @@ from app import action_contract
 from app import evaluation
 from app import handwritten_notes
 from app import index_jobs
+from app import job_queue
+from app import summary_jobs
+from app import ui_library
+from app import ui_trends
 from app import synthesis
 from app import trends
 from app import citation_opportunities
@@ -581,9 +585,16 @@ def _upsert_reading_embedding(pid: str, metadata: Dict, summary: str) -> None:
     )
 
 
-def _store_paper(pid: str, metadata: Dict, summary: str, paper_text: str = ""):
+def _store_paper(
+    pid: str,
+    metadata: Dict,
+    summary: str,
+    paper_text: str = "",
+    *,
+    summary_provenance: Optional[Dict] = None,
+):
     """Persist a paper, update its embedding, and queue citation discovery."""
-    paper_store.save_paper(pid, metadata, summary)
+    paper_store.save_paper(pid, metadata, summary, summary_provenance=summary_provenance)
     _upsert_reading_embedding(pid, metadata, summary)
 
     citation_discovery.enqueue_paper({**metadata, "summary": summary}, paper_text)
@@ -647,7 +658,7 @@ def _ingest_by_arxiv_id(raw_input: str, in_sidebar: bool = False):
             text = _fetch_text(result, pid, st.session_state.arxiv, st.session_state.pdf_extractor)
 
         with st.spinner("Summarizing..."):
-            summary = summarize_with_fallback(
+            summary, provenance = summarize_with_provenance(
                 st.session_state.summarizer,
                 text,
                 metadata.get("abstract", ""),
@@ -659,7 +670,8 @@ def _ingest_by_arxiv_id(raw_input: str, in_sidebar: bool = False):
                 return
 
         metadata["summary"] = summary
-        _store_paper(pid, metadata, summary, text)
+        metadata["summary_provenance"] = provenance
+        _store_paper(pid, metadata, summary, text, summary_provenance=provenance)
         st.session_state.papers.append(metadata)
         st.success(f"Added: {metadata['title'][:60]}...")
 
@@ -740,7 +752,7 @@ def render_search_results(query: str, author: str, categories: List[str], max_re
         for i, (_, metadata) in enumerate(new_results, start=1):
             pid = metadata["arxiv_id"]
             progress.progress(i / len(new_results), text=f"Summarizing {i}/{len(new_results)}: {metadata['title'][:50]}...")
-            summary = summarize_with_fallback(
+            summary, provenance = summarize_with_provenance(
                 st.session_state.summarizer,
                 texts.get(pid, ""),
                 metadata.get("abstract", ""),
@@ -751,7 +763,14 @@ def render_search_results(query: str, author: str, categories: List[str], max_re
                 st.warning(f"Skipping {pid}: no readable full text or abstract was available.")
                 continue
             metadata["summary"] = summary
-            _store_paper(pid, metadata, summary, texts.get(pid, ""))
+            metadata["summary_provenance"] = provenance
+            _store_paper(
+                pid,
+                metadata,
+                summary,
+                texts.get(pid, ""),
+                summary_provenance=provenance,
+            )
             if pid not in existing_ids:
                 st.session_state.papers.append(metadata)
                 existing_ids.add(pid)
@@ -1315,7 +1334,7 @@ def _regenerate_summary(paper: Dict, detailed: bool = False):
         else:
             st.warning(f"Could not fetch full paper text for {pid}: {exc}")
 
-    summary = summarize_with_fallback(
+    summary, provenance = summarize_with_provenance(
         st.session_state.summarizer,
         text,
         paper.get("abstract", ""),
@@ -1325,7 +1344,8 @@ def _regenerate_summary(paper: Dict, detailed: bool = False):
     if not summary.strip():
         st.error(f"Could not generate a summary for {pid}. No readable full text or abstract was available.")
         return None
-    _store_paper(pid, paper, summary)
+    paper["summary_provenance"] = provenance
+    _store_paper(pid, paper, summary, summary_provenance=provenance)
 
     # Update session state papers list
     for p in st.session_state.papers:
@@ -1361,41 +1381,28 @@ def render_papers_list():
     btn_col1, btn_col2, btn_col3, btn_col4, mode_col = st.columns([1, 1, 1, 1, 2])
     detailed_all = mode_col.checkbox("Detailed mode", key="regen_detailed_all")
     if btn_col1.button("Regenerate all"):
-        progress = st.progress(0, text="Regenerating summaries...")
-        all_papers = paper_store.load_reading_papers()
-        for i, p in enumerate(all_papers):
-            progress.progress((i + 1) / len(all_papers), text=f"Summarizing {i+1}/{len(all_papers)}: {p.get('title','')[:50]}...")
-            _regenerate_summary(p, detailed=detailed_all)
-        progress.empty()
-        st.session_state.papers = paper_store.load_reading_papers()
-        st.success("All summaries regenerated.")
-        st.rerun()
+        job_id = summary_jobs.enqueue(None, detailed=detailed_all)
+        st.success(f"Queued summary job {job_id[:8]}. Progress is shown under Library Health.")
     if btn_col2.button("Fill missing"):
         missing = [p for p in paper_store.load_reading_papers() if not p.get("summary", "").strip()]
         if not missing:
             st.info("No missing summaries.")
         else:
-            progress = st.progress(0, text="Filling missing summaries...")
-            for i, p in enumerate(missing):
-                progress.progress((i + 1) / len(missing), text=f"Summarizing {i+1}/{len(missing)}: {p.get('title','')[:50]}...")
-                _regenerate_summary(p, detailed=detailed_all)
-            progress.empty()
-            st.session_state.papers = paper_store.load_reading_papers()
-            st.success(f"Filled {len(missing)} missing summaries.")
-            st.rerun()
+            job_id = summary_jobs.enqueue(
+                [str(p.get("arxiv_id")) for p in missing],
+                detailed=detailed_all,
+            )
+            st.success(f"Queued {len(missing)} missing summaries as job {job_id[:8]}.")
     if btn_col3.button("Refresh"):
         st.session_state.papers = paper_store.load_reading_papers()
         st.rerun()
     if btn_col4.button("Repair incomplete"):
-        incomplete = [p for p in paper_store.load_reading_papers() if completeness_issues(p.get("summary", ""))]
-        progress = st.progress(0, text="Repairing incomplete summaries...")
-        for i, paper in enumerate(incomplete, start=1):
-            progress.progress(i / max(len(incomplete), 1), text=f"Repairing {i}/{len(incomplete)}")
-            _regenerate_summary(paper, detailed=True)
-        progress.empty()
-        st.session_state.papers = paper_store.load_reading_papers()
-        st.success(f"Rebuilt {len(incomplete)} summaries from full text.")
-        st.rerun()
+        incomplete_ids = summary_jobs.incomplete_paper_ids()
+        if incomplete_ids:
+            job_id = summary_jobs.enqueue(incomplete_ids, detailed=True)
+            st.success(f"Queued {len(incomplete_ids)} repairs as job {job_id[:8]}.")
+        else:
+            st.info("No incomplete summaries.")
 
     st.markdown("---")
 
@@ -1443,14 +1450,14 @@ def render_papers_list():
         st.info("No papers match the current filters.")
         return
 
-    st.caption(f"Showing {min(len(df), 50)} of {len(df)} papers")
+    page = ui_library.paginated_rows(df)
 
     # Per-paper cards with regenerate button
     # Keep a live summary cache in session state so regeneration shows immediately
     if "live_summaries" not in st.session_state:
         st.session_state.live_summaries = {}
 
-    for _, row in df.head(50).iterrows():
+    for _, row in page.iterrows():
         paper = _sanitize_paper_dict(row.to_dict())
         pid = paper.get("arxiv_id", "")
         # Use live summary if we just regenerated it this session
@@ -1462,6 +1469,7 @@ def render_papers_list():
                 st.caption(f"Published: {paper.get('published', 'N/A')}")
                 st.markdown("**Summary**")
                 st.write(displayed_summary)
+                ui_library.render_summary_provenance(paper)
                 issues = completeness_issues(displayed_summary)
                 if issues:
                     st.warning("Summary quality check: " + ", ".join(issues) + ". Regenerate in Detailed mode.")
@@ -1474,13 +1482,8 @@ def render_papers_list():
                     st.markdown(f"[View on ArXiv](https://arxiv.org/abs/{pid})")
                 detailed = st.checkbox("Detailed", key=f"det_{pid}")
                 if st.button("Regenerate summary", key=f"regen_{pid}"):
-                    with st.spinner("Summarizing..."):
-                        new_summary = _regenerate_summary(paper, detailed=detailed)
-                    if new_summary:
-                        st.session_state.live_summaries[pid] = new_summary
-                        st.session_state.papers = paper_store.load_reading_papers()
-                        st.success("Done. Summary updated.")
-                        st.rerun()
+                    job_id = summary_jobs.enqueue([pid], detailed=detailed)
+                    st.success(f"Queued as job {job_id[:8]}.")
                 show_chat_key = f"show_chat_{pid}"
                 if st.button("Chat with paper", key=f"chat_btn_{pid}"):
                     st.session_state[show_chat_key] = not st.session_state.get(show_chat_key, False)
@@ -3002,19 +3005,7 @@ def render_research_ops():
     trends_tab, indexing_tab, eval_tab = st.tabs(["Trends", "Search index", "Model checks"])
 
     with trends_tab:
-        window = st.slider("Recent window (days)", 30, 365, 90, 30)
-        rows = trends.emerging_themes(paper_store.load_reading_papers(), recent_days=window)
-        if rows:
-            trend_rows = [{
-                "theme": row["theme"],
-                "evidence": row["basis"],
-                "title support": row["title_support"],
-                "growth": f"{row['lift']:.1f}x",
-                "representative papers": " | ".join(row["examples"]),
-            } for row in rows]
-            st.dataframe(pd.DataFrame(trend_rows), width="stretch", hide_index=True)
-        else:
-            st.info("Not enough papers occur in both comparison windows yet.")
+        ui_trends.render(_session_vector_db())
 
     with indexing_tab:
         health = research_db.health_snapshot()
@@ -3038,15 +3029,17 @@ def render_research_ops():
                 vector_db=_session_vector_db(),
             )
             st.success(f"Queued indexing job {job_id[:8]}.")
-        if repair_col.button("Repair interrupted jobs", use_container_width=True):
+        if repair_col.button("Resume interrupted jobs", use_container_width=True):
             repaired = index_jobs.repair_stale_jobs()
-            st.success(f"Marked {repaired} interrupted jobs for rerun.")
+            st.success(f"Requeued {repaired} interrupted jobs.")
         jobs = index_jobs.list_jobs()
         if jobs:
             st.dataframe(pd.DataFrame([{
                 "job": job["job_id"][:8], "status": job["status"],
+                "type": job["kind"],
                 "papers": job.get("result", {}).get("papers_examined", ""),
-                "chunks": job.get("result", {}).get("chunks_written", ""),
+                "completed": job.get("result", {}).get("papers_completed", job.get("result", {}).get("papers_indexed", "")),
+                "progress": job.get("result", {}).get("current", ""),
                 "error": job.get("error", ""), "updated": job["updated_at"][:19],
             } for job in jobs]), use_container_width=True, hide_index=True)
 
@@ -3590,6 +3583,7 @@ def render_citation_opportunities():
 
 
 def main():
+    job_queue.start(recover=True)
     init_session_state()
     _auto_sync_papers_from_store()
     render_header()
