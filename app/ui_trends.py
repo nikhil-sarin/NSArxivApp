@@ -9,7 +9,12 @@ from app import paper_store, researcher_profile, trends
 
 def render(vector_db) -> None:
     window = st.slider("Recent window (days)", 30, 365, 90, 30)
-    profile_context = researcher_profile.to_context_string(researcher_profile.load())
+    profile = researcher_profile.load()
+    profile_context = "\n".join(
+        str(profile.get(key, "")).strip()
+        for key in ("research_areas", "methods_and_tools", "bio", "tracking_preferences")
+        if str(profile.get(key, "")).strip()
+    )
     data_mtime = paper_store.STORE_PATH.stat().st_mtime_ns if paper_store.STORE_PATH.exists() else 0
     cache_key = (data_mtime, window, profile_context, vector_db.embedding_backend)
     if st.button("Refresh clusters", use_container_width=False):

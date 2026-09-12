@@ -123,18 +123,34 @@ def _normalized_vector(value) -> np.ndarray | None:
     return vector / norm if vector.size and norm else None
 
 
-def _cluster_label(papers: list[dict]) -> str:
+def _cluster_label(papers: list[dict], corpus_document_frequency: Counter, corpus_size: int) -> str:
     counts: Counter = Counter()
     for paper in papers:
         _, title_terms = _terms(paper)
         counts.update(title_terms)
     if not counts:
         return "related papers"
-    return sorted(
-        counts,
-        key=lambda term: (counts[term], " " in term, len(term)),
+    minimum_support = max(2, math.ceil(len(papers) * 0.15))
+    candidates = [term for term in counts if counts[term] >= minimum_support]
+    if not candidates:
+        candidates = list(counts)
+    ranked = sorted(
+        candidates,
+        key=lambda term: (
+            counts[term] * math.log((corpus_size + 1) / (corpus_document_frequency[term] + 1))
+            * (1.35 if " " in term else 1.0),
+            counts[term],
+        ),
         reverse=True,
-    )[0]
+    )
+    selected: list[str] = []
+    for term in ranked:
+        if any(term in existing or existing in term for existing in selected):
+            continue
+        selected.append(term)
+        if len(selected) == 2:
+            break
+    return " / ".join(selected)
 
 
 def semantic_theme_clusters(
@@ -143,18 +159,26 @@ def semantic_theme_clusters(
     interest_text: str,
     encode,
     recent_days: int = 90,
-    similarity_threshold: float = 0.58,
-    relevance_threshold: float = 0.22,
+    similarity_threshold: float = 0.78,
+    relevance_threshold: float = 0.30,
     limit: int = 12,
     now=None,
 ) -> list[dict]:
     """Cluster recent papers semantically and retain profile-relevant groups."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=recent_days)
-    recent = [
-        paper for paper in papers
-        if (published := _date(paper.get("published"))) and cutoff <= published <= now
-    ]
+    recent_by_id: dict[str, dict] = {}
+    for paper in papers:
+        published = _date(paper.get("published"))
+        if not published or not cutoff <= published <= now:
+            continue
+        raw_id = str(paper.get("arxiv_id", ""))
+        identity = re.sub(r"v\d+$", "", raw_id.lower()) or re.sub(
+            r"\W+", " ", str(paper.get("title", "")).lower()
+        ).strip()
+        if identity and identity not in recent_by_id:
+            recent_by_id[identity] = paper
+    recent = list(recent_by_id.values())
     if not recent or not interest_text.strip():
         return []
     profile_vector = _normalized_vector(encode(interest_text))
@@ -181,6 +205,10 @@ def semantic_theme_clusters(
         else:
             clusters.append({"papers": [paper], "vectors": [vector], "centroid": vector})
 
+    corpus_document_frequency: Counter = Counter()
+    for paper in recent:
+        _, title_terms = _terms(paper)
+        corpus_document_frequency.update(title_terms)
     rows = []
     for cluster in clusters:
         if len(cluster["papers"]) < 2:
@@ -188,7 +216,7 @@ def semantic_theme_clusters(
         relevance = float(np.dot(cluster["centroid"], profile_vector))
         if relevance < relevance_threshold:
             continue
-        label = _cluster_label(cluster["papers"])
+        label = _cluster_label(cluster["papers"], corpus_document_frequency, len(recent))
         rows.append({
             "theme": label,
             "paper_count": len(cluster["papers"]),

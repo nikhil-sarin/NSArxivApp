@@ -3002,7 +3002,7 @@ def render_projects():
 def render_research_ops():
     """Render corpus trends, background indexing, and measured model routes."""
     st.header("Library Health")
-    trends_tab, indexing_tab, eval_tab = st.tabs(["Trends", "Search index", "Model checks"])
+    trends_tab, indexing_tab, eval_tab = st.tabs(["Recent clusters", "Search index", "Model checks"])
 
     with trends_tab:
         ui_trends.render(_session_vector_db())
