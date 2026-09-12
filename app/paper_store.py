@@ -138,7 +138,7 @@ def _save(data: Dict[str, Dict]):
             _index_paper(db, paper_id, paper)
 
 
-def save_paper(paper_id: str, metadata: Dict, summary: str):
+def save_paper(paper_id: str, metadata: Dict, summary: str, *, summary_provenance: Optional[Dict] = None):
     """Persist a paper atomically and place newly discovered papers in the inbox."""
     _migrate_legacy_if_needed()
     timestamp = _now()
@@ -146,6 +146,8 @@ def save_paper(paper_id: str, metadata: Dict, summary: str):
         row = db.execute("SELECT data_json FROM papers WHERE paper_id = ?", (paper_id,)).fetchone()
         existing = json.loads(row["data_json"]) if row else {}
         paper = {**existing, **metadata, "summary": summary}
+        if summary_provenance is not None:
+            paper["summary_provenance"] = summary_provenance
         db.execute(
             """
             INSERT INTO papers(paper_id, data_json, created_at, updated_at)
@@ -178,6 +180,40 @@ def load_reading_papers() -> List[Dict]:
             WHERE t.status != 'irrelevant'
             ORDER BY p.updated_at DESC
             """
+        ).fetchall()
+        return [json.loads(row["data_json"]) for row in rows]
+    finally:
+        db.close()
+
+
+def count_reading_papers() -> int:
+    """Return the number of papers admitted to the reading workflow."""
+    _migrate_legacy_if_needed()
+    db = research_db.connect()
+    try:
+        return int(db.execute(
+            "SELECT COUNT(*) FROM papers p JOIN triage t USING(paper_id) "
+            "WHERE t.status != 'irrelevant'"
+        ).fetchone()[0])
+    finally:
+        db.close()
+
+
+def load_reading_page(*, offset: int = 0, limit: int = 25, newest_first: bool = True) -> List[Dict]:
+    """Load one stable page without deserializing the entire library."""
+    _migrate_legacy_if_needed()
+    direction = "DESC" if newest_first else "ASC"
+    db = research_db.connect()
+    try:
+        rows = db.execute(
+            f"""
+            SELECT p.data_json
+            FROM papers p JOIN triage t USING(paper_id)
+            WHERE t.status != 'irrelevant'
+            ORDER BY p.updated_at {direction}, p.paper_id {direction}
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
         ).fetchall()
         return [json.loads(row["data_json"]) for row in rows]
     finally:
@@ -227,6 +263,25 @@ def get_paper(paper_id: str) -> Optional[Dict]:
     try:
         row = db.execute("SELECT data_json FROM papers WHERE paper_id = ?", (paper_id,)).fetchone()
         return json.loads(row["data_json"]) if row else None
+    finally:
+        db.close()
+
+
+def get_papers(paper_ids: List[str]) -> List[Dict]:
+    """Batch-load papers while preserving the requested result order."""
+    ids = list(dict.fromkeys(str(paper_id) for paper_id in paper_ids if paper_id))
+    if not ids:
+        return []
+    _migrate_legacy_if_needed()
+    db = research_db.connect()
+    try:
+        placeholders = ",".join("?" for _ in ids)
+        rows = db.execute(
+            f"SELECT paper_id, data_json FROM papers WHERE paper_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        by_id = {row["paper_id"]: json.loads(row["data_json"]) for row in rows}
+        return [by_id[paper_id] for paper_id in ids if paper_id in by_id]
     finally:
         db.close()
 
@@ -364,17 +419,26 @@ def search_by_text(text_query: str) -> List[Dict]:
                 ]
             ).lower()
         ]
-    reading_ids = {
-        paper.get("arxiv_id") for paper in load_reading_papers()
-    }
-    seen = set()
-    papers = []
+    seen: set[str] = set()
+    paper_ids: list[str] = []
     for match in matches:
         paper_id = match.get("paper_id")
         if not paper_id or paper_id in seen:
             continue
-        paper = get_paper(paper_id)
-        if paper and paper_id in reading_ids:
-            papers.append(paper)
-            seen.add(paper_id)
-    return papers
+        paper_ids.append(paper_id)
+        seen.add(paper_id)
+    if not paper_ids:
+        return []
+    db = research_db.connect()
+    try:
+        placeholders = ",".join("?" for _ in paper_ids)
+        reading_ids = {
+            row["paper_id"] for row in db.execute(
+                f"SELECT paper_id FROM triage WHERE status != 'irrelevant' "
+                f"AND paper_id IN ({placeholders})",
+                paper_ids,
+            ).fetchall()
+        }
+    finally:
+        db.close()
+    return get_papers([paper_id for paper_id in paper_ids if paper_id in reading_ids])

@@ -78,6 +78,7 @@ class PaperSummarizer:
         }
         if not self.model:
             self.model = self._defaults.get(self.provider, {}).get("model", "")
+        self.last_fallback_reason = ""
 
     def _active_provider(self) -> str:
         """Read provider from env each call so .env changes take effect without restart."""
@@ -93,7 +94,9 @@ class PaperSummarizer:
         return self._defaults.get(provider, {}).get("model", self.model)
 
     def summarize(self, text: str, max_length: int = 300, detailed: bool = False) -> str:
+        self.last_fallback_reason = ""
         if not text or len(text) < 100:
+            self.last_fallback_reason = "input_too_short"
             return text[:max_length] if text else ""
         if len(text) > self.CONTEXT_LIMIT:
             if not detailed:
@@ -131,6 +134,7 @@ class PaperSummarizer:
             return self.complete(system_prompt, user_prompt, max_length=max_length, detailed=detailed)
         except Exception as e:
             provider = self._active_provider()
+            self.last_fallback_reason = f"{type(e).__name__}: {e}"[:500]
             print(f"[summarizer] {provider} failed: {e}. Using fallback.")
             return self._fallback_summarize(text, max_length)
 
@@ -226,6 +230,7 @@ class PaperSummarizer:
             return self.complete(system, user, max_length=max_length, detailed=detailed)
         except Exception as e:
             provider = self._active_provider()
+            self.last_fallback_reason = f"section {chunk_index}/{total_chunks}: {type(e).__name__}: {e}"[:500]
             print(f"[summarizer] {provider} failed on section {chunk_index}/{total_chunks}: {e}. Using fallback.")
             return self._fallback_summarize(chunk, max_length)
 
@@ -276,6 +281,7 @@ class PaperSummarizer:
             return self.complete(system, user, max_length=max_length, detailed=detailed)
         except Exception as e:
             provider = self._active_provider()
+            self.last_fallback_reason = f"synthesis: {type(e).__name__}: {e}"[:500]
             print(f"[summarizer] {provider} failed during summary synthesis: {e}. Using fallback.")
             return self._fallback_summarize(fallback_text, max_length)
 
@@ -452,6 +458,8 @@ class PaperSummarizer:
     # ------------------------------------------------------------------
 
     def _fallback_summarize(self, text: str, max_length: int = 300) -> str:
+        if not self.last_fallback_reason:
+            self.last_fallback_reason = "deterministic_fallback"
         lines = text.split("\n")
         for line in lines:
             if any(k in line.lower() for k in ["abstract", "summary", "introduction", "conclusion"]):

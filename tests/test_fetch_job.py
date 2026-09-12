@@ -6,7 +6,7 @@ from app import fetch_job
 
 class FetchTrackingTests(unittest.TestCase):
     @mock.patch("app.fetch_job.citation_discovery.enabled", return_value=False)
-    @mock.patch("app.fetch_job.summarize_with_fallback")
+    @mock.patch("app.fetch_job.summarize_with_provenance")
     @mock.patch("app.fetch_job.get_paper_text", return_value="Full public paper text")
     @mock.patch("app.fetch_job.paper_store.update_triage")
     @mock.patch("app.fetch_job.paper_store.save_paper")

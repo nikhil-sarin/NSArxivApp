@@ -19,7 +19,7 @@ from app import paper_store
 from app.paper_text import get_paper_text
 from app.pdf_extractor import PDFExtractor
 from app.summarizer import PaperSummarizer
-from app.summary_workflow import summarize_with_fallback
+from app.summary_workflow import summarize_with_provenance
 from app.vector_db import PaperVectorDB
 from app import citation_discovery
 from app import contribution_catalogue, idea_store, relevance, researcher_profile
@@ -85,18 +85,32 @@ def _save_new_papers(
             print(f"  [warn] full text unavailable for {pid}: {exc}")
             text = ""
 
-        summary = (
-            summarize_with_fallback(summarizer, text, metadata.get("abstract", ""))
-            if reading_candidate
-            else (str(metadata.get("abstract", "")).strip() or text[:2000].strip())
-        )
+        if reading_candidate:
+            summary, provenance = summarize_with_provenance(
+                summarizer,
+                text,
+                metadata.get("abstract", ""),
+            )
+        else:
+            summary = str(metadata.get("abstract", "")).strip() or text[:2000].strip()
+            provenance = {
+                "status": "source_abstract",
+                "provider": "none",
+                "model": "none",
+                "input_source": "abstract" if metadata.get("abstract") else "full_text_excerpt",
+                "detailed": False,
+                "quality_issues": [],
+                "fallback_reason": "monitor_only",
+                "workflow_version": "summary-v2",
+            }
         if not summary.strip():
             print(f"  [skip] {pid} had no readable full text or abstract.")
             continue
 
         metadata["tracking_relevance_score"] = relevance_score
         metadata["tracking_relevance_reason"] = relevance_reason
-        paper_store.save_paper(pid, metadata, summary)
+        metadata["summary_provenance"] = provenance
+        paper_store.save_paper(pid, metadata, summary, summary_provenance=provenance)
         paper_store.update_triage(
             pid,
             status="inbox" if reading_candidate else "irrelevant",

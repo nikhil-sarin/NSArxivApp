@@ -1,7 +1,7 @@
 import unittest
 
 from app.summarizer import PaperSummarizer
-from app.summary_workflow import completeness_issues
+from app.summary_workflow import completeness_issues, summarize_with_provenance
 
 
 class SummaryCompletenessTests(unittest.TestCase):
@@ -21,6 +21,28 @@ class SummaryCompletenessTests(unittest.TestCase):
         self.assertIn("Bayesian hierarchical inference", excerpt)
         self.assertIn("posterior constrains ejecta opacity", excerpt)
         self.assertLessEqual(len(excerpt), summarizer.CONTEXT_LIMIT)
+
+    def test_summary_provenance_exposes_model_fallback(self):
+        class FakeSummarizer:
+            last_fallback_reason = "Timeout: provider unavailable"
+
+            def summarize(self, text, max_length=300, detailed=False):
+                return "A complete sentence generated from deterministic source text. " * 10
+
+            def _active_provider(self):
+                return "openai"
+
+            def _active_model(self):
+                return "test-model"
+
+        summary, provenance = summarize_with_provenance(
+            FakeSummarizer(),
+            "Full paper text " * 20,
+        )
+        self.assertTrue(summary)
+        self.assertEqual(provenance["status"], "fallback")
+        self.assertEqual(provenance["model"], "test-model")
+        self.assertEqual(provenance["input_source"], "full_text")
 
 
 if __name__ == "__main__":

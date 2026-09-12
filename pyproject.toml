@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nsarxivapp"
+version = "0.4.0"
+description = "A self-hosted research workflow for tracking and analysing arXiv papers"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "arxiv>=2.1.0",
+  "chromadb>=0.4.22",
+  "networkx>=3.1",
+  "numpy>=1.24.0",
+  "onnxruntime<1.24; python_version < '3.11'",
+  "plotly>=5.24.0",
+  "pypdf>=3.17.0",
+  "python-dotenv>=1.0.0",
+  "requests>=2.31.0",
+  "sentence-transformers>=2.2.2",
+  "streamlit>=1.28.0",
+  "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.9"]
+
+[project.scripts]
+nsarxiv-maintenance = "app.maintenance:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
