@@ -209,9 +209,14 @@ def preferred_citation(contribution: dict) -> dict:
 
 
 def group_by_paper(opportunities: list[dict]) -> list[list[dict]]:
-    """Preserve queue order while making one review unit per paper."""
+    """Preserve queue order and keep one current match per paper/contribution."""
     grouped: dict[str, list[dict]] = {}
+    seen: set[tuple[str, str]] = set()
     for opportunity in opportunities:
+        key = (opportunity["paper_id"], opportunity.get("contribution_id", ""))
+        if key[1] and key in seen:
+            continue
+        seen.add(key)
         grouped.setdefault(opportunity["paper_id"], []).append(opportunity)
     return list(grouped.values())
 

@@ -319,9 +319,10 @@ class CitationOpportunityTests(unittest.TestCase):
 
     def test_grouping_preserves_paper_and_queue_order(self):
         grouped = citation_opportunities.group_by_paper([
-            {"paper_id": "paper-a", "opportunity_id": "a1"},
-            {"paper_id": "paper-b", "opportunity_id": "b1"},
-            {"paper_id": "paper-a", "opportunity_id": "a2"},
+            {"paper_id": "paper-a", "contribution_id": "one", "opportunity_id": "a1"},
+            {"paper_id": "paper-b", "contribution_id": "one", "opportunity_id": "b1"},
+            {"paper_id": "paper-a", "contribution_id": "two", "opportunity_id": "a2"},
+            {"paper_id": "paper-a", "contribution_id": "one", "opportunity_id": "stale"},
         ])
 
         self.assertEqual(
