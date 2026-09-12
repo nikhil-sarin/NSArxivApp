@@ -12,6 +12,7 @@ import requests
 
 MAX_SOURCE_BYTES = 50 * 1024 * 1024
 MAX_TEX_BYTES = 8 * 1024 * 1024
+PLACEHOLDER_CONTACT_NAMES = {"paper contact", "corresponding author"}
 EMAIL_RE = re.compile(
     r"(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})",
     flags=re.I,
@@ -110,5 +111,20 @@ def fetch_arxiv_contact(arxiv_id: str, *, timeout: int = 60) -> dict | None:
 
 
 def find_public_contact(paper_text: str, arxiv_id: str) -> dict | None:
-    """Find a public contact locally first, then fall back to bounded arXiv source."""
-    return contact_from_text(paper_text) or fetch_arxiv_contact(arxiv_id)
+    """Prefer a named arXiv declaration, retaining a rendered-text email fallback."""
+    text_contact = contact_from_text(paper_text)
+    try:
+        source_contact = fetch_arxiv_contact(arxiv_id)
+    except (requests.RequestException, OSError, ValueError):
+        source_contact = None
+    return source_contact or text_contact
+
+
+def display_name(contact: dict) -> str:
+    """Hide internal fallback labels from user-facing contact descriptions."""
+    name = str(contact.get("name", "")).strip()
+    return (
+        "Public contact"
+        if not name or name.casefold() in PLACEHOLDER_CONTACT_NAMES
+        else name
+    )

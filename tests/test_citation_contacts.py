@@ -16,12 +16,31 @@ def test_explicit_corresponding_author_and_email_are_paired():
     }
 
 
-def test_public_email_in_rendered_front_matter_is_used_without_network():
+def test_named_arxiv_source_contact_is_preferred_over_rendered_fallback():
     text = "Authors and affiliations\nContact: person@institute.edu\nAbstract"
-    with mock.patch.object(citation_contacts, "fetch_arxiv_contact") as fetch:
+    named = {
+        "name": "Named Researcher",
+        "email": "person@institute.edu",
+        "source": "arXiv source",
+    }
+    with mock.patch.object(
+        citation_contacts, "fetch_arxiv_contact", return_value=named
+    ) as fetch:
+        contact = citation_contacts.find_public_contact(text, "2607.23114")
+    assert contact == named
+    fetch.assert_called_once_with("2607.23114")
+
+
+def test_rendered_email_is_retained_when_source_lookup_fails():
+    text = "Authors and affiliations\nContact: person@institute.edu\nAbstract"
+    with mock.patch.object(
+        citation_contacts,
+        "fetch_arxiv_contact",
+        side_effect=OSError("offline"),
+    ):
         contact = citation_contacts.find_public_contact(text, "2607.23114")
     assert contact["email"] == "person@institute.edu"
-    fetch.assert_not_called()
+    assert citation_contacts.display_name(contact) == "Public contact"
 
 
 def test_no_email_returns_none():

@@ -3396,7 +3396,7 @@ def render_citation_opportunities():
             contact = source_paper.get("corresponding_author")
             if isinstance(contact, dict) and contact.get("email"):
                 st.success(
-                    f"Public corresponding-author contact: {contact.get('name', 'Corresponding author')} "
+                    f"Public corresponding-author contact: {citation_contacts.display_name(contact)} "
                     f"({contact['email']})"
                 )
             else:
@@ -3446,7 +3446,8 @@ def render_citation_opportunities():
                     st.error(str(exc))
                 else:
                     contact_note = (
-                        f" Public contact found: {contact['name']} <{contact['email']}>."
+                        f" Public contact found: {citation_contacts.display_name(contact)} "
+                        f"<{contact['email']}>."
                         if contact else
                         " No public email was found, so you can enter one manually later."
                     )
