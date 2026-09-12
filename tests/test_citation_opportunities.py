@@ -233,6 +233,7 @@ class CitationOpportunityTests(unittest.TestCase):
     def test_export_requires_confirmation_and_is_bounded(self):
         opportunity = {
             "opportunity_id": "cop_1", "paper_id": "2609.1", "analysis_version": "1",
+            "contribution_id": "redback",
             "catalogue_version": "1.0",
             "classification": "potentially_useful", "confidence": 0.7, "rationale": "Relevant",
             "counterargument": "May not be needed", "evidence": PACKET["passages"], "status": "proposed",
@@ -275,6 +276,7 @@ class CitationOpportunityTests(unittest.TestCase):
             {
                 "opportunity_id": "cop_1",
                 "paper_id": "2609.1",
+                "contribution_id": "redback",
                 "catalogue_version": "1.2",
                 "classification": "strong_citation_opportunity",
                 "confidence": 0.9,
@@ -286,6 +288,7 @@ class CitationOpportunityTests(unittest.TestCase):
             {
                 "opportunity_id": "cop_2",
                 "paper_id": "2609.1",
+                "contribution_id": "mass-loss",
                 "catalogue_version": "1.2",
                 "classification": "potentially_useful",
                 "confidence": 0.7,
@@ -331,6 +334,7 @@ class CitationOpportunityTests(unittest.TestCase):
         post.return_value.json.return_value = {"candidate_ids": ["candidate_1"]}
         opportunity = {
             "opportunity_id": "cop_1", "paper_id": "2609.1", "analysis_version": "2",
+            "contribution_id": "redback",
             "catalogue_version": "1.2", "classification": "strong_citation_opportunity",
             "confidence": 0.9, "rationale": "Relevant", "counterargument": "May not apply",
             "evidence": PACKET["passages"], "status": "confirmed",
