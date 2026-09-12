@@ -3021,7 +3021,7 @@ def render_research_ops():
                 f"Vector index count differs from the library by "
                 f"{abs(health['papers'] - vector_count)} records."
             )
-        start_col, repair_col = st.columns(2)
+        start_col, repair_col, retry_col, cancel_col = st.columns(4)
         if start_col.button("Index missing full text", type="primary", use_container_width=True):
             job_id = index_jobs.enqueue_library_index(
                 arxiv_client=st.session_state.arxiv,
@@ -3032,6 +3032,12 @@ def render_research_ops():
         if repair_col.button("Resume interrupted jobs", use_container_width=True):
             repaired = index_jobs.repair_stale_jobs()
             st.success(f"Requeued {repaired} interrupted jobs.")
+        if retry_col.button("Retry failed", use_container_width=True):
+            retried = job_queue.retry_failed()
+            st.success(f"Requeued {retried} failed jobs.")
+        if cancel_col.button("Cancel queued", use_container_width=True):
+            cancelled = job_queue.cancel_queued()
+            st.success(f"Cancelled {cancelled} queued jobs.")
         jobs = index_jobs.list_jobs()
         if jobs:
             st.dataframe(pd.DataFrame([{

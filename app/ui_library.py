@@ -46,4 +46,8 @@ def render_summary_provenance(paper: dict) -> None:
         + (f" - {generated} UTC" if generated else "")
     )
     if provenance.get("status") == "fallback":
-        st.warning("The model failed and this summary used deterministic fallback text.")
+        reason = str(provenance.get("fallback_reason", ""))
+        if reason == "input_too_short":
+            st.warning("The source was too short for model generation, so its text was retained directly.")
+        else:
+            st.warning("Model generation failed and this summary used deterministic fallback text.")

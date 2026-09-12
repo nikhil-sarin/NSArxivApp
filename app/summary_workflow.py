@@ -56,14 +56,14 @@ def summarize_with_provenance(
     """Generate a summary together with durable source and model provenance."""
     full_text = (text or "").strip()
     abstract_text = (abstract or "").strip()
-    source = "full_text" if full_text else "abstract" if abstract_text else "none"
-    summary = summarize_with_fallback(
-        summarizer,
-        full_text,
-        abstract_text,
-        max_length=max_length,
-        detailed=detailed,
-    )
+    source = "none"
+    summary = ""
+    if full_text:
+        source = "full_text"
+        summary = summarizer.summarize(full_text, max_length=max_length, detailed=detailed).strip()
+    if not summary and abstract_text:
+        source = "abstract"
+        summary = summarizer.summarize(abstract_text, max_length=max_length, detailed=detailed).strip()
     issues = completeness_issues(summary)
     fallback_reason = str(getattr(summarizer, "last_fallback_reason", "") or "")
     status = "failed" if not summary else "fallback" if fallback_reason else "incomplete" if issues else "complete"

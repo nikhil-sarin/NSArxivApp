@@ -16,8 +16,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[dev]'
-      - run: python -m unittest discover -s tests -q
-      - run: python -m app.maintenance doctor
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
+      - run: uv run python -m unittest discover -s tests -q
+      - run: uv run python -m app.maintenance doctor

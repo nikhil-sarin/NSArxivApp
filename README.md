@@ -38,6 +38,12 @@ For an editable development installation with test and lint tools:
 pip install -e '.[dev]'
 ```
 
+For a reproducible installation using the committed dependency lock:
+
+```bash
+uv sync --locked
+```
+
 Copy and configure the environment file:
 ```bash
 cp .env.example .env   # or edit .env directly

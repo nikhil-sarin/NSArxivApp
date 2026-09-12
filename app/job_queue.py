@@ -53,6 +53,29 @@ def recover_interrupted() -> int:
         return cursor.rowcount
 
 
+def retry_failed() -> int:
+    """Requeue failed jobs while preserving their durable payloads."""
+    with research_db.transaction() as db:
+        cursor = db.execute(
+            "UPDATE jobs SET status='queued', result_json='{}', error='', updated_at=? "
+            "WHERE status IN ('failed', 'completed_with_errors')",
+            (_now(),),
+        )
+    start()
+    _WAKE.set()
+    return cursor.rowcount
+
+
+def cancel_queued() -> int:
+    """Cancel work that has not yet been claimed."""
+    with research_db.transaction() as db:
+        cursor = db.execute(
+            "UPDATE jobs SET status='cancelled', updated_at=? WHERE status='queued'",
+            (_now(),),
+        )
+        return cursor.rowcount
+
+
 def _claim() -> dict | None:
     with research_db.transaction() as db:
         row = db.execute(
