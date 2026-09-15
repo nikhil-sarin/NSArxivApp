@@ -127,12 +127,15 @@ def _save_new_papers(
             if value is not None and not isinstance(value, list)
         }
         if reading_candidate:
-            vdb.add_paper(
-                paper_id=pid,
-                title=metadata["title"],
-                summary=summary,
-                metadata=chroma_meta,
-            )
+            try:
+                vdb.add_paper(
+                    paper_id=pid,
+                    title=metadata["title"],
+                    summary=summary,
+                    metadata=chroma_meta,
+                )
+            except Exception as exc:
+                print(f"  [warn] vector indexing failed for {pid}: {exc}")
         if citation_discovery.enabled():
             try:
                 discovery = citation_discovery.discover_paper({**metadata, "summary": summary}, text)
