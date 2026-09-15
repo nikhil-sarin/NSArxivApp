@@ -1,10 +1,55 @@
 import unittest
+from contextlib import ExitStack
 from unittest import mock
 
 from app import fetch_job
 
 
 class FetchTrackingTests(unittest.TestCase):
+    def test_vector_failure_does_not_abort_daily_batch(self):
+        paper = {
+            "arxiv_id": "2609.12044",
+            "title": "Relevant transient",
+            "abstract": "Transient inference abstract.",
+            "authors": ["A. Author"],
+            "categories": ["astro-ph.HE"],
+        }
+        provenance = {"status": "complete", "provider": "openai"}
+        vdb = mock.Mock()
+        vdb.add_paper.side_effect = ValueError("nested metadata")
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("app.fetch_job.citation_discovery.enabled", return_value=False))
+            stack.enter_context(mock.patch("app.fetch_job.get_paper_text", return_value="Full public paper text"))
+            stack.enter_context(mock.patch("app.fetch_job.paper_store.paper_exists", return_value=False))
+            save_paper = stack.enter_context(mock.patch("app.fetch_job.paper_store.save_paper"))
+            stack.enter_context(mock.patch("app.fetch_job.paper_store.update_triage"))
+            stack.enter_context(mock.patch("app.fetch_job.paper_store.load_triage", return_value=[]))
+            stack.enter_context(mock.patch("app.fetch_job.researcher_profile.load", return_value={}))
+            stack.enter_context(mock.patch("app.fetch_job.idea_store.load_ideas", return_value=[]))
+            stack.enter_context(mock.patch(
+                "app.fetch_job.contribution_catalogue.load",
+                return_value={"contributions": []},
+            ))
+            stack.enter_context(mock.patch(
+                "app.fetch_job.relevance.score_tracking_papers",
+                return_value=[{**paper, "relevance_score": 80.0, "relevance_reason": "Relevant"}],
+            ))
+            stack.enter_context(mock.patch(
+                "app.fetch_job.summarize_with_provenance",
+                return_value=("Generated summary", provenance),
+            ))
+
+            count = fetch_job._save_new_papers(
+                [paper],
+                client=mock.Mock(),
+                extractor=mock.Mock(),
+                summarizer=mock.Mock(),
+                vdb=vdb,
+            )
+
+        self.assertEqual(count, 1)
+        save_paper.assert_called_once()
+
     @mock.patch("app.fetch_job.citation_discovery.enabled", return_value=False)
     @mock.patch("app.fetch_job.summarize_with_provenance")
     @mock.patch("app.fetch_job.get_paper_text", return_value="Full public paper text")
