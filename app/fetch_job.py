@@ -6,8 +6,9 @@ Usage:
 """
 
 import argparse
+import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 from app.arxiv_announcements import fetch_papers as fetch_announcement_papers
 from app.arxiv_announcements import paper_to_metadata
 from app.arxiv_client import ArxivClient
-from app import paper_store
+from app import paper_store, research_db
 from app.paper_text import get_paper_text
 from app.pdf_extractor import PDFExtractor
 from app.summarizer import PaperSummarizer
@@ -28,6 +29,51 @@ from app import contribution_catalogue, idea_store, relevance, researcher_profil
 TRACKING_RELEVANCE_THRESHOLD = 50.0
 
 MAX_EMPTY_DATE_LOOKBACK_DAYS = 7
+FETCH_WATERMARK_KEY = "new_submissions_last_successful_date"
+
+
+def _load_fetch_watermark() -> date | None:
+    db = research_db.connect()
+    try:
+        row = db.execute(
+            "SELECT value_json FROM settings WHERE key=?", (FETCH_WATERMARK_KEY,)
+        ).fetchone()
+    finally:
+        db.close()
+    if row is None:
+        return None
+    try:
+        return date.fromisoformat(str(json.loads(row["value_json"])))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _save_fetch_watermark(processed_date: date) -> None:
+    current = _load_fetch_watermark()
+    if current is not None and current >= processed_date:
+        return
+    with research_db.transaction() as db:
+        db.execute(
+            "INSERT INTO settings(key, value_json, updated_at) VALUES(?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, "
+            "updated_at=excluded.updated_at",
+            (
+                FETCH_WATERMARK_KEY,
+                json.dumps(processed_date.isoformat()),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+
+def _pending_announcement_dates(requested_date: date) -> list[date]:
+    """Include every calendar day after the last fully successful scheduled run."""
+    watermark = _load_fetch_watermark()
+    if watermark is None or watermark >= requested_date:
+        return [requested_date]
+    return [
+        watermark + timedelta(days=offset)
+        for offset in range(1, (requested_date - watermark).days + 1)
+    ]
 
 
 def _save_new_papers(
@@ -199,50 +245,79 @@ def _fetch_latest_nonempty_submissions(
     return start_date, {category: [] for category in categories}
 
 
-def run_new_submissions(categories: list[str], max_results: int, days_back: int = 1):
+def run_new_submissions(
+    categories: list[str],
+    max_results: int,
+    days_back: int = 1,
+    announcement_date: date | None = None,
+):
     load_dotenv()
     if not categories:
         raise ValueError("new-submissions mode requires at least one category")
 
-    requested_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).date()
+    requested_date = announcement_date or (
+        datetime.now(timezone.utc) - timedelta(days=days_back)
+    ).date()
     client = ArxivClient()
     extractor = PDFExtractor()
     summarizer = PaperSummarizer()
     vdb = PaperVectorDB()
 
-    print(f"[{datetime.now()}] Fetching new submissions: cats={categories} requested_announcement_date={requested_date}")
+    pending_dates = [requested_date] if announcement_date else _pending_announcement_dates(requested_date)
+    total_new = 0
+    for pending_date in pending_dates:
+        print(
+            f"[{datetime.now()}] Fetching new submissions: cats={categories} "
+            f"requested_announcement_date={pending_date}"
+        )
+        try:
+            if len(pending_dates) > 1 or announcement_date:
+                target_date = pending_date
+                papers_by_category = {
+                    category: fetch_announcement_papers(category, pending_date)
+                    for category in categories
+                }
+            else:
+                target_date, papers_by_category = _fetch_latest_nonempty_submissions(
+                    categories, pending_date
+                )
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to fetch announcement date {pending_date}: {exc}"
+            ) from exc
 
-    try:
-        target_date, papers_by_category = _fetch_latest_nonempty_submissions(categories, requested_date)
-    except Exception as exc:
-        raise RuntimeError(f"failed to resolve latest non-empty announcement date: {exc}") from exc
+        if target_date != pending_date:
+            print(
+                f"  [info] no new submissions on {pending_date}; "
+                f"using latest non-empty announcement date {target_date}"
+            )
 
-    if target_date != requested_date:
-        print(f"  [info] no new submissions on {requested_date}; using latest non-empty announcement date {target_date}")
+        seen_ids: set[str] = set()
+        metadata_to_save: list[dict] = []
+        for category in categories:
+            papers = papers_by_category.get(category, [])
+            print(f"  [info] {category}: {len(papers)} announced papers")
+            for paper in papers:
+                if paper.arxiv_id in seen_ids:
+                    continue
+                seen_ids.add(paper.arxiv_id)
+                metadata_to_save.append(paper_to_metadata(paper))
 
-    seen_ids: set[str] = set()
-    metadata_to_save: list[dict] = []
-    for category in categories:
-        papers = papers_by_category.get(category, [])
-        print(f"  [info] {category}: {len(papers)} announced papers")
-        for paper in papers:
-            if paper.arxiv_id in seen_ids:
-                continue
-            seen_ids.add(paper.arxiv_id)
-            metadata_to_save.append(paper_to_metadata(paper))
+        if max_results > 0:
+            metadata_to_save = metadata_to_save[:max_results]
 
-    if max_results > 0:
-        metadata_to_save = metadata_to_save[:max_results]
-
-    print(f"Found {len(metadata_to_save)} unique announcement-day papers.")
-    new_count = _save_new_papers(
-        metadata_to_save,
-        client=client,
-        extractor=extractor,
-        summarizer=summarizer,
-        vdb=vdb,
-    )
-    print(f"[{datetime.now()}] Done. Added {new_count} new papers.")
+        print(f"Found {len(metadata_to_save)} unique announcement-day papers.")
+        new_count = _save_new_papers(
+            metadata_to_save,
+            client=client,
+            extractor=extractor,
+            summarizer=summarizer,
+            vdb=vdb,
+        )
+        total_new += new_count
+        _save_fetch_watermark(pending_date)
+        print(f"[{datetime.now()}] Done. Added {new_count} new papers.")
+    return total_new
 
 
 if __name__ == "__main__":
@@ -262,6 +337,11 @@ if __name__ == "__main__":
         default=1,
         help="In query-search mode, look back N days; in new-submissions mode, start from the UTC announcement day N days ago and back up to the latest non-empty date.",
     )
+    parser.add_argument(
+        "--announcement-date",
+        type=date.fromisoformat,
+        help="Fetch one exact UTC announcement date (YYYY-MM-DD), primarily for repair.",
+    )
     args = parser.parse_args()
 
     if args.mode == "new-submissions":
@@ -269,6 +349,7 @@ if __name__ == "__main__":
             categories=args.categories,
             max_results=args.max_results,
             days_back=args.days_back,
+            announcement_date=args.announcement_date,
         )
     else:
         run_query_search(

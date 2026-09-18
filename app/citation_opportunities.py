@@ -225,6 +225,10 @@ def judge(
             raise ValueError("positive judgement requires evidence")
         if packet["reference_check"]["canonical_citation_found"] and classification == "strong_citation_opportunity":
             raise ValueError("canonical citation is already present")
+    except requests.RequestException:
+        # Provider outages are operational failures, not scientific judgements.
+        # Do not persist them, so normal discovery can retry the pair later.
+        raise
     except Exception as exc:
         result = _insufficient(packet, catalogue_version, f"Judgement rejected: {exc}", model)
     else:
