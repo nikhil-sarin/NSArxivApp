@@ -1,11 +1,19 @@
 import unittest
 from contextlib import ExitStack
+from datetime import date
 from unittest import mock
 
 from app import fetch_job
 
 
 class FetchTrackingTests(unittest.TestCase):
+    @mock.patch("app.fetch_job._load_fetch_watermark", return_value=date(2026, 9, 15))
+    def test_pending_dates_recover_every_day_after_watermark(self, load_watermark):
+        self.assertEqual(
+            fetch_job._pending_announcement_dates(date(2026, 9, 18)),
+            [date(2026, 9, 16), date(2026, 9, 17), date(2026, 9, 18)],
+        )
+
     def test_vector_failure_does_not_abort_daily_batch(self):
         paper = {
             "arxiv_id": "2609.12044",

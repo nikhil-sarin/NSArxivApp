@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import requests
+
 from app import citation_opportunities, citation_opportunity_store, research_db
 
 
@@ -261,6 +263,23 @@ class CitationOpportunityTests(unittest.TestCase):
             provider="ollama", model_name="test",
         )
         self.assertEqual(result["classification"], "insufficient_evidence")
+
+    @mock.patch("app.citation_opportunities.citation_opportunity_store.save")
+    def test_provider_failure_is_retryable_and_not_persisted(self, save):
+        def unavailable(system, user):
+            raise requests.HTTPError("503 provider unavailable")
+
+        with self.assertRaises(requests.HTTPError):
+            citation_opportunities.judge(
+                PACKET,
+                CONTRIBUTION,
+                catalogue_version="1.0",
+                complete=unavailable,
+                provider="openai",
+                model_name="test",
+            )
+
+        save.assert_not_called()
 
     def test_export_requires_confirmation_and_is_bounded(self):
         opportunity = {
