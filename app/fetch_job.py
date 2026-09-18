@@ -317,6 +317,13 @@ def run_new_submissions(
         total_new += new_count
         _save_fetch_watermark(pending_date)
         print(f"[{datetime.now()}] Done. Added {new_count} new papers.")
+    eligibility = citation_discovery.refresh_active_eligibility(client)
+    print(
+        "[citations] refreshed active eligibility: "
+        f"papers={eligibility['papers_checked']} "
+        f"removed={eligibility['opportunities_removed']} "
+        f"failed={eligibility['failed']}"
+    )
     return total_new
 
 

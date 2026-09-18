@@ -138,6 +138,17 @@ def delete_unreviewed_analyses(paper_id: str, contribution_ids: list[str]) -> No
         )
 
 
+def delete_active_for_paper(paper_id: str) -> int:
+    """Remove matches that can no longer lead to an author contact."""
+    with research_db.transaction() as db:
+        cursor = db.execute(
+            "DELETE FROM citation_opportunities WHERE paper_id=? "
+            "AND status IN ('proposed', 'needs_review', 'confirmed')",
+            (paper_id,),
+        )
+        return cursor.rowcount
+
+
 def update_status(opportunity_id: str, status: str) -> None:
     if status not in {"proposed", "confirmed", "not_relevant", "needs_review", "exported"}:
         raise ValueError(f"invalid opportunity status: {status}")
