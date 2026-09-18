@@ -91,7 +91,10 @@ class CitationDiscoveryTests(unittest.TestCase):
     @mock.patch("app.citation_discovery.citation_opportunities.judge")
     @mock.patch("app.citation_discovery.citation_evidence.build_evidence_packet")
     @mock.patch("app.citation_discovery.contribution_catalogue.load")
-    def test_published_paper_is_cleaned_but_never_judged(self, load_catalogue, build_packet, judge):
+    @mock.patch("app.citation_discovery.citation_opportunity_store.delete_active_for_paper", return_value=2)
+    def test_published_paper_is_cleaned_but_never_judged(
+        self, delete_active, load_catalogue, build_packet, judge
+    ):
         load_catalogue.return_value = {
             "schema_version": "1.2", "owner": "Researcher",
             "contributions": [{"id": "tool", "name": "Tool", "enabled": True}],
@@ -102,8 +105,38 @@ class CitationDiscoveryTests(unittest.TestCase):
             force=True,
         )
         self.assertEqual(result["ineligible_reason"], "accepted_or_published")
+        self.assertEqual(result["removed"], 2)
+        delete_active.assert_called_once_with("2609.2")
         build_packet.assert_not_called()
         judge.assert_not_called()
+
+    @mock.patch("app.citation_discovery.paper_store.save_paper")
+    @mock.patch("app.citation_discovery.paper_store.get_paper")
+    @mock.patch("app.citation_discovery.citation_opportunity_store.delete_active_for_paper")
+    @mock.patch("app.citation_discovery.citation_opportunity_store.list_actionable")
+    def test_refresh_removes_papers_that_are_now_published(
+        self, list_actionable, delete_active, get_paper, save_paper
+    ):
+        list_actionable.return_value = [
+            {"paper_id": "2609.1", "status": "proposed"},
+            {"paper_id": "2609.1", "status": "confirmed"},
+            {"paper_id": "2609.2", "status": "exported"},
+        ]
+        delete_active.return_value = 2
+        get_paper.return_value = {"arxiv_id": "2609.1", "summary": "Existing summary"}
+        client = mock.Mock()
+        client.get_paper_metadata.return_value = {
+            "arxiv_id": "2609.1", "journal_ref": "ApJ 999, 1"
+        }
+
+        result = citation_discovery.refresh_active_eligibility(client)
+
+        self.assertEqual(result, {
+            "papers_checked": 1, "opportunities_removed": 2, "failed": 0,
+        })
+        client.get_result_by_id.assert_called_once_with("2609.1")
+        delete_active.assert_called_once_with("2609.1")
+        save_paper.assert_called_once()
 
 
 if __name__ == "__main__":

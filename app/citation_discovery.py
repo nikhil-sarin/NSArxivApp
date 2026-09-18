@@ -30,6 +30,16 @@ def discover_paper(paper: dict, paper_text: str, *, force: bool = False) -> dict
         contribution for contribution in catalogue["contributions"]
         if contribution.get("enabled", True)
     ]
+    if citation_evidence.paper_is_already_published(paper):
+        removed = citation_opportunity_store.delete_active_for_paper(paper_id)
+        return {
+            "paper_id": paper_id,
+            "checked": len(contributions),
+            "model_judgements": 0,
+            "reviewable": 0,
+            "removed": removed,
+            "ineligible_reason": "accepted_or_published",
+        }
     analysed = set() if force else citation_opportunity_store.analyzed_contribution_ids(
         paper_id,
         citation_opportunities.ANALYSIS_VERSION,
@@ -40,12 +50,6 @@ def discover_paper(paper: dict, paper_text: str, *, force: bool = False) -> dict
         paper_id,
         [item["id"] for item in contributions],
     )
-    if citation_evidence.paper_is_already_published(paper):
-        return {
-            "paper_id": paper_id, "checked": len(contributions),
-            "model_judgements": 0, "reviewable": 0,
-            "ineligible_reason": "accepted_or_published",
-        }
     for contribution in contributions:
         checked += 1
         if not citation_evidence.contribution_predates_paper(paper_id, contribution):
@@ -71,6 +75,39 @@ def discover_paper(paper: dict, paper_text: str, *, force: bool = False) -> dict
         if result["classification"] in {"strong_citation_opportunity", "potentially_useful"}:
             reviewable += 1
     return {"paper_id": paper_id, "checked": checked, "model_judgements": judged, "reviewable": reviewable}
+
+
+def refresh_active_eligibility(arxiv_client) -> dict:
+    """Refresh active matches from arXiv and remove accepted/published papers."""
+    active = citation_opportunity_store.list_actionable(limit=500)
+    paper_ids = sorted({
+        item["paper_id"]
+        for item in active
+        if item.get("status") in {"proposed", "needs_review", "confirmed"}
+    })
+    checked = removed = failed = 0
+    for paper_id in paper_ids:
+        try:
+            result = arxiv_client.get_result_by_id(paper_id)
+            metadata = arxiv_client.get_paper_metadata(result)
+            checked += 1
+            if citation_evidence.paper_is_already_published(metadata):
+                removed += citation_opportunity_store.delete_active_for_paper(paper_id)
+                existing = paper_store.get_paper(paper_id) or {}
+                if existing:
+                    paper_store.save_paper(
+                        paper_id,
+                        {**existing, **metadata},
+                        str(existing.get("summary", "")),
+                        summary_provenance=existing.get("summary_provenance"),
+                    )
+        except Exception:
+            failed += 1
+    return {
+        "papers_checked": checked,
+        "opportunities_removed": removed,
+        "failed": failed,
+    }
 
 
 def _run(payload: dict, runtime: dict) -> dict:
