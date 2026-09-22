@@ -8,8 +8,13 @@ from app.citation_backfill import eligible_papers
 
 class CitationBackfillTests(unittest.TestCase):
     def test_redback_prefilter_uses_transient_domain_terms(self):
-        contribution = {"backfill_prefilter_terms": ["light curve", "kilonova"]}
+        contribution = {"backfill_prefilter_rules": [{
+            "all": [["bilby"], ["light curve", "kilonova"]],
+        }]}
         self.assertTrue(citation_backfill._matches_backfill_prefilter(
+            {"title": "Bilby kilonova modelling"}, [contribution]
+        ))
+        self.assertFalse(citation_backfill._matches_backfill_prefilter(
             {"title": "Bayesian kilonova modelling"}, [contribution]
         ))
         self.assertFalse(citation_backfill._matches_backfill_prefilter(
