@@ -148,7 +148,12 @@ def run(
     return totals
 
 
-def run_ids(arxiv_ids: list[str], *, force: bool = False) -> dict:
+def run_ids(
+    arxiv_ids: list[str],
+    *,
+    force: bool = False,
+    contribution_ids: set[str] | None = None,
+) -> dict:
     """Fetch, store, and evaluate an explicit set of ArXiv papers."""
     client = ArxivClient()
     extractor = PDFExtractor()
@@ -159,9 +164,15 @@ def run_ids(arxiv_ids: list[str], *, force: bool = False) -> dict:
         "contributions_checked": 0,
         "model_judgements": 0,
         "reviewable": 0,
+        "terminal_decisions_preserved": 0,
     }
     for index, raw_id in enumerate(arxiv_ids, start=1):
         paper_id = raw_id.rstrip("/").split("/")[-1].removesuffix(".pdf").split("v")[0]
+        if contribution_ids:
+            terminal = citation_opportunity_store.terminal_decision_contribution_ids(paper_id)
+            if contribution_ids <= terminal:
+                totals["terminal_decisions_preserved"] += 1
+                continue
         try:
             result = client.get_result_by_id(paper_id)
             metadata = client.get_paper_metadata(result)
@@ -182,7 +193,12 @@ def run_ids(arxiv_ids: list[str], *, force: bool = False) -> dict:
                 else str(metadata.get("abstract", ""))
             )
             paper_store.save_paper(paper_id, metadata, summary)
-            result_summary = citation_discovery.discover_paper(metadata, text, force=force)
+            result_summary = citation_discovery.discover_paper(
+                metadata,
+                text,
+                force=force,
+                contribution_ids=contribution_ids,
+            )
         except Exception as exc:
             totals["papers_failed"] += 1
             print(f"[{index}/{len(arxiv_ids)}] {paper_id}: failed: {exc}", flush=True)
@@ -215,7 +231,11 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     if args.arxiv_ids:
-        totals = run_ids(args.arxiv_ids, force=args.force)
+        totals = run_ids(
+            args.arxiv_ids,
+            force=args.force,
+            contribution_ids=set(args.contribution_ids) or None,
+        )
     else:
         totals = run(
             days=args.days,
