@@ -63,7 +63,14 @@
         "A framework-adoption opportunity is potentially useful even when a Redback citation is not scientifically obligatory."
       ],
       "exclusions": ["bilby gravitational wave inference", "pulsar timing inference", "transient localization analysis", "particle transport simulation", "periodogram variability analysis"],
-      "backfill_prefilter_terms": ["transient", "light curve", "lightcurve", "supernova", "kilonova", "gamma ray burst", "grb", "afterglow", "tidal disruption", "fbot", "magnetar", "nova", "mosfit", "sncosmo", "nmma", "afterglowpy", "bilby"],
+      "backfill_prefilter_rules": [{
+        "all": [["bilby", "mosfit", "sncosmo", "nmma", "afterglowpy"]]
+      }, {
+        "all": [
+          ["bayesian", "inference", "parameter estimation", "parameter inference", "fitting", "fit", "mcmc", "nested sampling", "dynesty", "model comparison", "forward model", "likelihood"],
+          ["transient", "light curve", "lightcurve", "supernova", "kilonova", "gamma ray burst", "grb", "afterglow", "tidal disruption", "fbot", "magnetar", "nova"]
+        ]
+      }],
       "public_url": "https://github.com/nikhil-sarin/redback",
       "contact_framing": "Offer Redback as potentially relevant software and invite discussion; never imply misconduct."
     },

@@ -53,18 +53,28 @@ def eligible_papers(papers: list[dict], *, owner: str, days: int, limit: int, no
 
 
 def _matches_backfill_prefilter(paper: dict, contributions: list[dict]) -> bool:
-    terms = {
-        normalize(term)
+    rules = [
+        rule
         for contribution in contributions
-        for term in contribution.get("backfill_prefilter_terms", [])
-        if normalize(term)
+        for rule in contribution.get("backfill_prefilter_rules", [])
+    ]
+    legacy_terms = {
+        normalize(term) for contribution in contributions
+        for term in contribution.get("backfill_prefilter_terms", []) if normalize(term)
     }
-    if not terms:
+    if not rules and not legacy_terms:
         return True
     searchable = normalize(" ".join(str(paper.get(key, "")) for key in (
         "title", "abstract", "summary", "categories",
     )))
-    return any(term in searchable for term in terms)
+    return any(term in searchable for term in legacy_terms) or any(
+        all(
+            any(normalize(term) in searchable for term in group if normalize(term))
+            for group in rule.get("all", [])
+        )
+        for rule in rules
+        if rule.get("all")
+    )
 
 
 def run(
