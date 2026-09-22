@@ -90,6 +90,10 @@ class CitationBackfillTests(unittest.TestCase):
             "Existing generated summary",
         )
 
+    @mock.patch(
+        "app.citation_backfill.citation_opportunity_store.terminal_decision_contribution_ids",
+        return_value=set(),
+    )
     @mock.patch("app.citation_backfill.citation_discovery.discover_paper")
     @mock.patch("app.citation_backfill.get_paper_text", return_value="Full public paper")
     @mock.patch("app.citation_backfill.paper_store.save_paper")
@@ -97,7 +101,8 @@ class CitationBackfillTests(unittest.TestCase):
     @mock.patch("app.citation_backfill.PDFExtractor")
     @mock.patch("app.citation_backfill.ArxivClient")
     def test_explicit_retry_is_limited_to_requested_contribution(
-        self, client_class, extractor_class, get_paper, save_paper, get_text, discover
+        self, client_class, extractor_class, get_paper, save_paper, get_text, discover,
+        terminal_decisions,
     ):
         client = client_class.return_value
         client.get_result_by_id.return_value = mock.Mock()
