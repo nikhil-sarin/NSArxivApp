@@ -124,6 +124,20 @@ def analyzed_contribution_ids(paper_id: str, analysis_version: str, catalogue_ve
         db.close()
 
 
+def terminal_decision_contribution_ids(paper_id: str) -> set[str]:
+    """Return contributions the user rejected or already exported for this paper."""
+    db = research_db.connect()
+    try:
+        rows = db.execute(
+            "SELECT DISTINCT contribution_id FROM citation_opportunities "
+            "WHERE paper_id=? AND status IN ('not_relevant', 'exported')",
+            (paper_id,),
+        ).fetchall()
+        return {row["contribution_id"] for row in rows}
+    finally:
+        db.close()
+
+
 def delete_unreviewed_analyses(paper_id: str, contribution_ids: list[str]) -> None:
     """Replace stale proposed results while preserving confirmed/exported decisions."""
     if not contribution_ids:

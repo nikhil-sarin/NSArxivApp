@@ -22,6 +22,33 @@ class CitationDiscoveryTests(unittest.TestCase):
         self.db_patch.stop()
         self.tempdir.cleanup()
 
+    @mock.patch("app.citation_discovery.citation_opportunities.judge")
+    @mock.patch("app.citation_discovery.citation_evidence.build_evidence_packet")
+    @mock.patch("app.citation_discovery.contribution_catalogue.load")
+    def test_discovery_can_recheck_only_one_contribution(
+        self, load_catalogue, build_packet, judge
+    ):
+        load_catalogue.return_value = {
+            "schema_version": "1.3",
+            "owner": "Researcher",
+            "contributions": [
+                {"id": "redback", "name": "Redback", "enabled": True},
+                {"id": "other", "name": "Other", "enabled": True},
+            ],
+        }
+        build_packet.return_value = {"candidate": False}
+
+        result = citation_discovery.discover_paper(
+            {"arxiv_id": "2609.2", "title": "Transient"},
+            "Public transient paper body",
+            force=True,
+            contribution_ids={"redback"},
+        )
+
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(build_packet.call_args.args[2]["id"], "redback")
+        judge.assert_not_called()
+
     @mock.patch("app.citation_discovery.citation_opportunities.export_bundle")
     @mock.patch("app.citation_discovery.citation_opportunities.judge")
     @mock.patch("app.citation_discovery.citation_evidence.build_evidence_packet")

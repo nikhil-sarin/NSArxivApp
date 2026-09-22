@@ -130,6 +130,29 @@ class CitationEvidenceTests(unittest.TestCase):
                 self.assertTrue(packet["candidate"])
                 self.assertTrue(packet["matched_strong_rules"])
 
+        redback = by_id["redback"]
+        redback_cases = [
+            "We used nested sampling for parameter estimation of a multi-band kilonova light curve.",
+            "We fitted the bolometric supernova light curve with a bespoke magnetar forward model.",
+            "We used MOSFiT for Bayesian inference of the tidal disruption transient light curve.",
+        ]
+        for text in redback_cases:
+            with self.subTest(redback_text=text):
+                packet = build_evidence_packet(
+                    "2609.test", text, redback, owner_name_variants=[]
+                )
+                self.assertTrue(packet["candidate"])
+                self.assertTrue(packet["matched_strong_rules"])
+
+        excluded = build_evidence_packet(
+            "2609.test",
+            "We use a periodogram variability analysis for pulsar timing inference.",
+            redback,
+            owner_name_variants=[],
+        )
+        self.assertFalse(excluded["candidate"])
+        self.assertIn("pulsar timing inference", excluded["matched_exclusions"])
+
         kilonova = by_id["magnetar-driven-kilonovae"]
         supernova_only = (
             "A magnetar powered supernova receives energy injection into its ejecta and light curve."
