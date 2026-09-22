@@ -10,8 +10,10 @@ class ContributionCatalogueTests(unittest.TestCase):
     def test_example_catalogue_is_valid_and_aliases_normalize(self):
         catalogue = contribution_catalogue.load(contribution_catalogue.EXAMPLE_PATH)
         redback = contribution_catalogue.get(catalogue, "redback")
+        self.assertEqual(catalogue["schema_version"], "1.3")
         self.assertIn("redback software", redback["aliases"])
         self.assertEqual(redback["canonical_citations"][0]["arxiv_id"], "2308.12806")
+        self.assertGreaterEqual(len(redback["discovery_rules"]), 4)
         self.assertEqual(len(catalogue["contributions"]), 23)
         self.assertTrue(all(item.get("enabled", True) for item in catalogue["contributions"]))
         by_id = {item["id"]: item for item in catalogue["contributions"]}

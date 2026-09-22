@@ -9,7 +9,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from app import citation_discovery, contribution_catalogue, paper_store
+from app import (
+    citation_discovery,
+    citation_opportunity_store,
+    contribution_catalogue,
+    paper_store,
+)
+from app.contribution_catalogue import normalize
 from app.arxiv_client import ArxivClient
 from app.paper_text import get_paper_text
 from app.pdf_extractor import PDFExtractor
@@ -46,7 +52,28 @@ def eligible_papers(papers: list[dict], *, owner: str, days: int, limit: int, no
     return eligible
 
 
-def run(*, days: int, max_papers: int, force: bool = False) -> dict:
+def _matches_backfill_prefilter(paper: dict, contributions: list[dict]) -> bool:
+    terms = {
+        normalize(term)
+        for contribution in contributions
+        for term in contribution.get("backfill_prefilter_terms", [])
+        if normalize(term)
+    }
+    if not terms:
+        return True
+    searchable = normalize(" ".join(str(paper.get(key, "")) for key in (
+        "title", "abstract", "summary", "categories",
+    )))
+    return any(term in searchable for term in terms)
+
+
+def run(
+    *,
+    days: int,
+    max_papers: int,
+    force: bool = False,
+    contribution_ids: set[str] | None = None,
+) -> dict:
     catalogue = contribution_catalogue.load()
     papers = eligible_papers(
         paper_store.load_all_papers(),
@@ -56,6 +83,10 @@ def run(*, days: int, max_papers: int, force: bool = False) -> dict:
     )
     client = ArxivClient()
     extractor = PDFExtractor()
+    selected_contributions = [
+        contribution for contribution in catalogue["contributions"]
+        if contribution_ids is None or contribution["id"] in contribution_ids
+    ]
     totals = {
         "papers_selected": len(papers),
         "papers_processed": 0,
@@ -63,9 +94,19 @@ def run(*, days: int, max_papers: int, force: bool = False) -> dict:
         "contributions_checked": 0,
         "model_judgements": 0,
         "reviewable": 0,
+        "papers_prefiltered": 0,
+        "terminal_decisions_preserved": 0,
     }
     for index, paper in enumerate(papers, start=1):
         paper_id = str(paper.get("arxiv_id", ""))
+        if contribution_ids:
+            terminal = citation_opportunity_store.terminal_decision_contribution_ids(paper_id)
+            if contribution_ids <= terminal:
+                totals["terminal_decisions_preserved"] += 1
+                continue
+            if not _matches_backfill_prefilter(paper, selected_contributions):
+                totals["papers_prefiltered"] += 1
+                continue
         try:
             text = get_paper_text(
                 paper_id,
@@ -75,7 +116,12 @@ def run(*, days: int, max_papers: int, force: bool = False) -> dict:
                 pdf_url=paper.get("pdf_url"),
                 cache_dir=Path("data/papers"),
             )
-            result = citation_discovery.discover_paper(paper, text, force=force)
+            result = citation_discovery.discover_paper(
+                paper,
+                text,
+                force=force,
+                contribution_ids=contribution_ids,
+            )
         except Exception as exc:
             totals["papers_failed"] += 1
             print(f"[{index}/{len(papers)}] {paper_id}: failed: {exc}", flush=True)
@@ -150,6 +196,10 @@ if __name__ == "__main__":
     parser.add_argument("--max-papers", type=int, default=100)
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
+        "--contribution-ids", nargs="*", default=[],
+        help="Recheck only these contribution IDs, preserving rejected/exported decisions.",
+    )
+    parser.add_argument(
         "--arxiv-ids", nargs="*", default=[],
         help="Fetch and check explicit ArXiv IDs or URLs instead of scanning the stored library.",
     )
@@ -157,5 +207,10 @@ if __name__ == "__main__":
     if args.arxiv_ids:
         totals = run_ids(args.arxiv_ids, force=args.force)
     else:
-        totals = run(days=args.days, max_papers=args.max_papers, force=args.force)
+        totals = run(
+            days=args.days,
+            max_papers=args.max_papers,
+            force=args.force,
+            contribution_ids=set(args.contribution_ids) or None,
+        )
     print(json.dumps(totals, sort_keys=True))

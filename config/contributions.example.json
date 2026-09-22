@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.2",
+  "schema_version": "1.3",
   "owner": "Nikhil Sarin",
   "owner_name_variants": ["N. Sarin", "N Sarin", "Nikhil Sarin"],
   "contributions": [
@@ -16,23 +16,54 @@
         "url": "https://doi.org/10.1093/mnras/stae1238"
       }],
       "aliases": ["redback", "redback software", "redback package"],
-      "strong_signals": ["bilby transient light curve inference", "bayesian electromagnetic transient modelling", "simulate and fit electromagnetic transients"],
-      "weak_signals": ["transient parameter inference", "magnetar powered transient modelling", "kilonova light curve modelling"],
+      "strong_signals": ["bilby transient light curve inference", "bayesian electromagnetic transient modelling", "simulate and fit electromagnetic transients", "bayesian physical transient light curve fitting"],
+      "weak_signals": ["transient parameter inference", "magnetar powered transient modelling", "kilonova light curve modelling", "supernova light curve parameter estimation", "afterglow parameter inference", "tidal disruption event light curve fitting", "nested sampling transient model comparison", "multi band transient inference"],
       "discovery_rules": [{
         "name": "Bilby used directly for electromagnetic-transient inference",
         "strength": "strong",
         "all": [
           ["bilby"],
-          ["bayesian inference", "parameter inference", "fitting", "fit", "dynesty"],
-          ["transient", "light curve", "radio", "optical", "supernova", "tidal disruption"]
+          ["bayesian inference", "parameter inference", "parameter estimation", "fitting", "fit", "dynesty"],
+          ["transient", "light curve", "lightcurve", "radio", "optical", "supernova", "kilonova", "afterglow", "tidal disruption"]
         ],
         "preferred_evidence": ["bayesian inference", "parameter inference", "performed"]
+      }, {
+        "name": "Bayesian fitting of a physical transient light curve",
+        "strength": "strong",
+        "all": [
+          ["bayesian inference", "parameter inference", "parameter estimation", "mcmc", "nested sampling", "dynesty", "posterior"],
+          ["light curve", "lightcurve", "multi band photometry", "multiband photometry", "bolometric luminosity"],
+          ["supernova", "kilonova", "gamma ray burst", "grb", "afterglow", "tidal disruption", "fast blue optical transient", "fbot", "nova"]
+        ],
+        "preferred_evidence": ["bayesian inference", "nested sampling", "light curve", "parameter estimation"]
+      }, {
+        "name": "A physical transient model is fitted with a bespoke workflow",
+        "strength": "strong",
+        "all": [
+          ["fit", "fitting", "modelled", "modeled", "forward model", "likelihood"],
+          ["magnetar", "radioactive decay", "arnett", "circumstellar interaction", "shock interaction", "afterglow", "kilonova ejecta", "tidal disruption"],
+          ["light curve", "lightcurve", "photometry", "bolometric"]
+        ],
+        "preferred_evidence": ["fit", "fitting", "likelihood", "light curve"]
+      }, {
+        "name": "Another general transient package is used for inference",
+        "strength": "strong",
+        "all": [
+          ["mosfit", "sncosmo", "nmma", "afterglowpy"],
+          ["fit", "fitting", "inference", "parameter estimation"],
+          ["transient", "supernova", "kilonova", "afterglow", "tidal disruption", "light curve"]
+        ],
+        "preferred_evidence": ["mosfit", "sncosmo", "nmma", "afterglowpy", "inference"]
       }],
       "key_claims": [
         "Redback is an electromagnetic-transient inference and simulation framework built on Bilby.",
-        "A paper using Bilby directly for electromagnetic-transient fitting may benefit from Redback's domain models, likelihoods, and reproducible workflow; this does not apply to gravitational-wave-only inference."
+        "Redback provides a common workflow for physical transient models, multi-band data, likelihood construction, prior specification, Bayesian sampling, model comparison, and posterior analysis.",
+        "Its model ecosystem covers supernovae, kilonovae, GRB afterglows, tidal disruption events, magnetar-powered transients, and related optical or radio transients.",
+        "A paper using Bilby directly or maintaining bespoke transient-fitting machinery may benefit from Redback's domain models and reproducible workflow; this does not apply to gravitational-wave-only inference.",
+        "A framework-adoption opportunity is potentially useful even when a Redback citation is not scientifically obligatory."
       ],
-      "exclusions": ["bilby gravitational wave inference"],
+      "exclusions": ["bilby gravitational wave inference", "pulsar timing inference", "transient localization analysis", "particle transport simulation", "periodogram variability analysis"],
+      "backfill_prefilter_terms": ["transient", "light curve", "lightcurve", "supernova", "kilonova", "gamma ray burst", "grb", "afterglow", "tidal disruption", "fbot", "magnetar", "nova", "mosfit", "sncosmo", "nmma", "afterglowpy", "bilby"],
       "public_url": "https://github.com/nikhil-sarin/redback",
       "contact_framing": "Offer Redback as potentially relevant software and invite discussion; never imply misconduct."
     },

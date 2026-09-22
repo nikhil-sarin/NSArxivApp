@@ -13,7 +13,13 @@ def enabled() -> bool:
     return os.getenv("AUTO_CITATION_DISCOVERY", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def discover_paper(paper: dict, paper_text: str, *, force: bool = False) -> dict:
+def discover_paper(
+    paper: dict,
+    paper_text: str,
+    *,
+    force: bool = False,
+    contribution_ids: set[str] | None = None,
+) -> dict:
     """Analyse one public paper, calling the model only after deterministic filtering."""
     paper_id = str(paper.get("arxiv_id", "")).strip()
     if not paper_id or not paper_text.strip():
@@ -29,6 +35,7 @@ def discover_paper(paper: dict, paper_text: str, *, force: bool = False) -> dict
     contributions = [
         contribution for contribution in catalogue["contributions"]
         if contribution.get("enabled", True)
+        and (contribution_ids is None or contribution["id"] in contribution_ids)
     ]
     if citation_evidence.paper_is_already_published(paper):
         removed = citation_opportunity_store.delete_active_for_paper(paper_id)
