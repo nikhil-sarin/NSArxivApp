@@ -3185,8 +3185,17 @@ def render_citation_opportunities():
                     raise ValueError("add the paper using the left sidebar first")
                 source_paper = paper_store.get_paper(stored_id) or {}
                 contribution = contribution_options[manual_contribution_label]
-                if citation_evidence.paper_is_already_published(source_paper):
+                ineligible_reason = (
+                    citation_evidence.citation_opportunity_ineligibility_reason(
+                        source_paper
+                    )
+                )
+                if ineligible_reason == "accepted_or_published":
                     raise ValueError("the paper is already accepted or published")
+                if ineligible_reason == "opportunity_window_expired":
+                    raise ValueError(
+                        "the paper is outside the configured citation-opportunity window"
+                    )
                 if not citation_evidence.contribution_predates_paper(stored_id, contribution):
                     raise ValueError("the selected work was not public before this paper")
                 with st.spinner("Validating evidence against the paper..."):

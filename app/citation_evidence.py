@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 from app.contribution_catalogue import normalize
@@ -11,16 +13,69 @@ from app.contribution_catalogue import normalize
 MAX_QUOTE_CHARS = 700
 SIGNAL_WORDS_TO_IGNORE = {"a", "an", "and", "for", "in", "of", "on", "the", "to", "using", "with"}
 PUBLISHED_COMMENT_RE = re.compile(
-    r"\b(accepted (?:for|in|to|by)|published (?:in|as)|in press|to appear(?: in)?)\b",
+    r"\b(accepted|published|in press|forthcoming|to appear(?: in)?)\b",
     flags=re.IGNORECASE,
 )
+DEFAULT_OPPORTUNITY_MAX_AGE_DAYS = 30
+
+
+def opportunity_max_age_days() -> int:
+    raw = os.getenv(
+        "CITATION_OPPORTUNITY_MAX_AGE_DAYS",
+        str(DEFAULT_OPPORTUNITY_MAX_AGE_DAYS),
+    )
+    try:
+        days = int(raw)
+    except ValueError as exc:
+        raise ValueError("CITATION_OPPORTUNITY_MAX_AGE_DAYS must be an integer") from exc
+    if days < 1:
+        raise ValueError("CITATION_OPPORTUNITY_MAX_AGE_DAYS must be at least 1")
+    return days
+
+
+def _published_at(paper: dict) -> datetime | None:
+    value = paper.get("published")
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def paper_is_already_published(paper: dict) -> bool:
     """Return true when metadata says the manuscript is accepted or published."""
     journal_ref = str(paper.get("journal_ref") or paper.get("journal_reference") or "").strip()
+    doi = str(paper.get("doi") or "").strip()
     comment = str(paper.get("comment") or paper.get("comments") or "").strip()
-    return bool(journal_ref or PUBLISHED_COMMENT_RE.search(comment))
+    comment_without_negated_acceptance = re.sub(
+        r"\bnot\s+(?:yet\s+)?accepted\b",
+        "",
+        comment,
+        flags=re.IGNORECASE,
+    )
+    return bool(journal_ref or doi or PUBLISHED_COMMENT_RE.search(comment_without_negated_acceptance))
+
+
+def citation_opportunity_ineligibility_reason(
+    paper: dict,
+    *,
+    now: datetime | None = None,
+    max_age_days: int | None = None,
+) -> str | None:
+    """Explain why a paper can no longer be acted on as a citation opportunity."""
+    if paper_is_already_published(paper):
+        return "accepted_or_published"
+    published = _published_at(paper)
+    if published is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    now = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    max_age_days = opportunity_max_age_days() if max_age_days is None else max_age_days
+    if published < now - timedelta(days=max_age_days):
+        return "opportunity_window_expired"
+    return None
 
 
 def _arxiv_sequence(value: str) -> tuple[int, int, int] | None:

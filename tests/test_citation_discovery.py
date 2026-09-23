@@ -162,8 +162,8 @@ class CitationDiscoveryTests(unittest.TestCase):
         self, list_actionable, delete_active, get_paper, save_paper
     ):
         list_actionable.return_value = [
-            {"paper_id": "2609.1", "status": "proposed"},
-            {"paper_id": "2609.1", "status": "confirmed"},
+            {"paper_id": "2609.1v1", "status": "proposed"},
+            {"paper_id": "2609.1v1", "status": "confirmed"},
             {"paper_id": "2609.2", "status": "exported"},
         ]
         delete_active.return_value = 2
@@ -176,10 +176,14 @@ class CitationDiscoveryTests(unittest.TestCase):
         result = citation_discovery.refresh_active_eligibility(client)
 
         self.assertEqual(result, {
-            "papers_checked": 1, "opportunities_removed": 2, "failed": 0,
+            "papers_checked": 1,
+            "opportunities_removed": 2,
+            "removed_published": 2,
+            "removed_expired": 0,
+            "failed": 0,
         })
         client.get_result_by_id.assert_called_once_with("2609.1")
-        delete_active.assert_called_once_with("2609.1")
+        delete_active.assert_called_once_with("2609.1v1")
         save_paper.assert_called_once()
 
 

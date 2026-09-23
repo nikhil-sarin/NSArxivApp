@@ -531,8 +531,9 @@ class ArxivClient:
             "abstract": result.summary,
             "published": result.published.isoformat(),
             "pdf_url": result.pdf_url,
-            "arxiv_id": result.entry_id.split("/")[-1],
+            "arxiv_id": re.sub(r"v\d+$", "", result.entry_id.split("/")[-1]),
             "categories": result.categories,
             "comment": result.comment,
             "journal_ref": result.journal_ref,
+            "doi": getattr(result, "doi", None),
         }
