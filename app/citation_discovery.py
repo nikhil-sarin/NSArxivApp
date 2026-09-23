@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from app import citation_evidence, citation_opportunities, citation_opportunity_store
 from app import contribution_catalogue, job_queue, paper_store, privacy, research_db
@@ -45,7 +46,8 @@ def discover_paper(
         if contribution.get("enabled", True)
         and (contribution_ids is None or contribution["id"] in contribution_ids)
     ]
-    if citation_evidence.paper_is_already_published(paper):
+    ineligible_reason = citation_evidence.citation_opportunity_ineligibility_reason(paper)
+    if ineligible_reason:
         removed = citation_opportunity_store.delete_active_for_paper(paper_id)
         return {
             "paper_id": paper_id,
@@ -53,7 +55,7 @@ def discover_paper(
             "model_judgements": 0,
             "reviewable": 0,
             "removed": removed,
-            "ineligible_reason": "accepted_or_published",
+            "ineligible_reason": ineligible_reason,
         }
     analysed = set() if force else citation_opportunity_store.analyzed_contribution_ids(
         paper_id,
@@ -93,21 +95,28 @@ def discover_paper(
 
 
 def refresh_active_eligibility(arxiv_client) -> dict:
-    """Refresh active matches from arXiv and remove accepted/published papers."""
+    """Refresh active matches and remove published or expired opportunities."""
     active = citation_opportunity_store.list_actionable(limit=500)
     paper_ids = sorted({
         item["paper_id"]
         for item in active
         if item.get("status") in {"proposed", "needs_review", "confirmed"}
     })
-    checked = removed = failed = 0
+    checked = removed = failed = removed_published = removed_expired = 0
     for paper_id in paper_ids:
         try:
-            result = arxiv_client.get_result_by_id(paper_id)
+            latest_id = re.sub(r"v\d+$", "", paper_id)
+            result = arxiv_client.get_result_by_id(latest_id)
             metadata = arxiv_client.get_paper_metadata(result)
             checked += 1
-            if citation_evidence.paper_is_already_published(metadata):
-                removed += citation_opportunity_store.delete_active_for_paper(paper_id)
+            reason = citation_evidence.citation_opportunity_ineligibility_reason(metadata)
+            if reason:
+                removed_for_paper = citation_opportunity_store.delete_active_for_paper(paper_id)
+                removed += removed_for_paper
+                if reason == "accepted_or_published":
+                    removed_published += removed_for_paper
+                elif reason == "opportunity_window_expired":
+                    removed_expired += removed_for_paper
                 existing = paper_store.get_paper(paper_id) or {}
                 if existing:
                     paper_store.save_paper(
@@ -121,6 +130,8 @@ def refresh_active_eligibility(arxiv_client) -> dict:
     return {
         "papers_checked": checked,
         "opportunities_removed": removed,
+        "removed_published": removed_published,
+        "removed_expired": removed_expired,
         "failed": failed,
     }
 

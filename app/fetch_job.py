@@ -322,6 +322,8 @@ def run_new_submissions(
         "[citations] refreshed active eligibility: "
         f"papers={eligibility['papers_checked']} "
         f"removed={eligibility['opportunities_removed']} "
+        f"published={eligibility['removed_published']} "
+        f"expired={eligibility['removed_expired']} "
         f"failed={eligibility['failed']}"
     )
     return total_new

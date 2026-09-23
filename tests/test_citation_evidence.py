@@ -1,8 +1,10 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from app import contribution_catalogue
 from app.citation_evidence import (
     build_evidence_packet,
+    citation_opportunity_ineligibility_reason,
     contribution_predates_paper,
     paper_is_already_published,
 )
@@ -31,8 +33,33 @@ class CitationEvidenceTests(unittest.TestCase):
         self.assertFalse(contribution_predates_paper("2509.09520", contribution))
         self.assertFalse(contribution_predates_paper("2605.19571", contribution))
         self.assertTrue(paper_is_already_published({"comment": "Accepted for publication in MNRAS"}))
+        self.assertTrue(paper_is_already_published({"comment": "A&A, accepted"}))
+        self.assertTrue(paper_is_already_published({"comment": "ApJ accepted"}))
         self.assertTrue(paper_is_already_published({"journal_ref": "ApJ 999, 1"}))
+        self.assertTrue(paper_is_already_published({"doi": "10.1234/example"}))
         self.assertFalse(paper_is_already_published({"comment": "Submitted to ApJ"}))
+        self.assertFalse(paper_is_already_published({"comment": "Not yet accepted"}))
+
+    def test_citation_opportunity_expires_after_configured_window(self):
+        now = datetime(2026, 9, 23, tzinfo=timezone.utc)
+        self.assertIsNone(citation_opportunity_ineligibility_reason(
+            {"published": (now - timedelta(days=30)).isoformat()},
+            now=now,
+            max_age_days=30,
+        ))
+        self.assertEqual(citation_opportunity_ineligibility_reason(
+            {"published": (now - timedelta(days=31)).isoformat()},
+            now=now,
+            max_age_days=30,
+        ), "opportunity_window_expired")
+        self.assertEqual(citation_opportunity_ineligibility_reason(
+            {
+                "published": (now - timedelta(days=2)).isoformat(),
+                "comment": "MNRAS accepted",
+            },
+            now=now,
+            max_age_days=30,
+        ), "accepted_or_published")
 
     def test_exact_evidence_and_stable_locator(self):
         text = (

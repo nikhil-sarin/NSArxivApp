@@ -320,9 +320,10 @@ NSArxivApp does not require LocalOrchestrator. Public and standalone installatio
 
 ```env
 AUTO_CITATION_DISCOVERY=true
+CITATION_OPPORTUNITY_MAX_AGE_DAYS=30
 ```
 
-Newly ingested papers are then checked using deterministic signal and reference filters before any model call. Only filtered candidates receive a strict evidence-grounded model judgement. The **Citation Opportunities** view is the local manual review queue; its controls can create, edit, reject, or rerun a match without another service.
+Newly ingested papers are then checked using deterministic signal and reference filters before any model call. Only filtered candidates receive a strict evidence-grounded model judgement. Unsent matches are removed when arXiv reports a journal reference, DOI, or acceptance/publication comment, or when they pass the configurable opportunity window (30 days by default). The **Citation Opportunities** view is the local manual review queue; its controls can create, edit, dismiss, reject, restore, or rerun a match without another service.
 
 Backfill a bounded recent slice after expanding the catalogue:
 
