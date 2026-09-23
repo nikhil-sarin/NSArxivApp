@@ -24,6 +24,14 @@ def discover_paper(
     paper_id = str(paper.get("arxiv_id", "")).strip()
     if not paper_id or not paper_text.strip():
         return {"paper_id": paper_id, "checked": 0, "model_judgements": 0, "reviewable": 0}
+    if citation_opportunity_store.paper_is_dismissed(paper_id):
+        return {
+            "paper_id": paper_id,
+            "checked": 0,
+            "model_judgements": 0,
+            "reviewable": 0,
+            "ineligible_reason": "dismissed_by_user",
+        }
 
     catalogue = contribution_catalogue.load()
     provider = privacy.choose_provider(

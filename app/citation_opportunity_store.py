@@ -125,12 +125,12 @@ def analyzed_contribution_ids(paper_id: str, analysis_version: str, catalogue_ve
 
 
 def terminal_decision_contribution_ids(paper_id: str) -> set[str]:
-    """Return contributions the user rejected or already exported for this paper."""
+    """Return contributions the user rejected, dismissed, or already exported."""
     db = research_db.connect()
     try:
         rows = db.execute(
             "SELECT DISTINCT contribution_id FROM citation_opportunities "
-            "WHERE paper_id=? AND status IN ('not_relevant', 'exported')",
+            "WHERE paper_id=? AND status IN ('not_relevant', 'dismissed', 'exported')",
             (paper_id,),
         ).fetchall()
         return {row["contribution_id"] for row in rows}
@@ -164,12 +164,47 @@ def delete_active_for_paper(paper_id: str) -> int:
 
 
 def update_status(opportunity_id: str, status: str) -> None:
-    if status not in {"proposed", "confirmed", "not_relevant", "needs_review", "exported"}:
+    if status not in {
+        "proposed", "confirmed", "not_relevant", "needs_review", "dismissed", "exported",
+    }:
         raise ValueError(f"invalid opportunity status: {status}")
     with research_db.transaction() as db:
         if not db.execute("SELECT 1 FROM citation_opportunities WHERE opportunity_id=?", (opportunity_id,)).fetchone():
             raise KeyError(opportunity_id)
         db.execute("UPDATE citation_opportunities SET status=?, updated_at=? WHERE opportunity_id=?", (status, _now(), opportunity_id))
+
+
+def dismiss_for_paper(paper_id: str) -> int:
+    """Dismiss every active match for a paper without disputing its relevance."""
+    with research_db.transaction() as db:
+        cursor = db.execute(
+            "UPDATE citation_opportunities SET status='dismissed', updated_at=? "
+            "WHERE paper_id=? AND status IN ('proposed', 'needs_review', 'confirmed')",
+            (_now(), paper_id),
+        )
+        return cursor.rowcount
+
+
+def restore_dismissed_for_paper(paper_id: str) -> int:
+    """Return a dismissed paper bundle to the review queue."""
+    with research_db.transaction() as db:
+        cursor = db.execute(
+            "UPDATE citation_opportunities SET status='proposed', updated_at=? "
+            "WHERE paper_id=? AND status='dismissed'",
+            (_now(), paper_id),
+        )
+        return cursor.rowcount
+
+
+def paper_is_dismissed(paper_id: str) -> bool:
+    db = research_db.connect()
+    try:
+        return db.execute(
+            "SELECT 1 FROM citation_opportunities WHERE paper_id=? AND status='dismissed' LIMIT 1",
+            (paper_id,),
+        ).fetchone() is not None
+    finally:
+        db.close()
 
 
 def replace_active_for_paper(paper_id: str, replacement_ids: list[str]) -> None:

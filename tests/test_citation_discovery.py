@@ -13,6 +13,23 @@ class CitationDiscoveryTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"AUTO_CITATION_DISCOVERY": "true"}):
             self.assertTrue(citation_discovery.enabled())
 
+    @mock.patch(
+        "app.citation_discovery.citation_opportunity_store.paper_is_dismissed",
+        return_value=True,
+    )
+    @mock.patch("app.citation_discovery.contribution_catalogue.load")
+    def test_dismissed_paper_is_not_rediscovered(self, load_catalogue, is_dismissed):
+        result = citation_discovery.discover_paper(
+            {"arxiv_id": "2609.2", "title": "Relevant but declined"},
+            "Public paper body",
+            force=True,
+        )
+
+        self.assertEqual(result["ineligible_reason"], "dismissed_by_user")
+        self.assertEqual(result["model_judgements"], 0)
+        is_dismissed.assert_called_once_with("2609.2")
+        load_catalogue.assert_not_called()
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_patch = mock.patch.object(research_db, "DB_PATH", Path(self.tempdir.name) / "research.db")
