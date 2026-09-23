@@ -44,6 +44,26 @@ class OpenAIProviderTests(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer test-key")
         self.assertEqual(post.call_args.kwargs["json"]["model"], "google/gemma-4-31b-it")
 
+    def test_provider_specific_models_keep_private_ollama_separate(self):
+        with mock.patch.dict(os.environ, {
+            "SUMMARIZER_PROVIDER": "gemini",
+            "GEMINI_MODEL": "gemini-2.5-pro",
+            "LLM_MODEL": "google/gemma-4-31b-it",
+            "OLLAMA_MODEL": "gemma4:latest",
+        }, clear=False):
+            self.assertEqual(
+                PaperSummarizer(provider="gemini")._active_model(),
+                "gemini-2.5-pro",
+            )
+            self.assertEqual(
+                PaperSummarizer(provider="ollama").model,
+                "gemma4:latest",
+            )
+            self.assertEqual(
+                PaperSummarizer(provider="ollama")._active_provider(),
+                "ollama",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
