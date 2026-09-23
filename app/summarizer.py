@@ -23,6 +23,32 @@ def _gemini_post(url: str, api_key: str, payload: dict, timeout: int = 120) -> d
     return response.json()
 
 
+def _gemini_generation_config(max_output_tokens: int) -> dict:
+    """Reserve enough output space for models that account for thinking tokens."""
+    return {
+        "maxOutputTokens": max(512, int(max_output_tokens)),
+        "thinkingConfig": {
+            "thinkingBudget": int(os.getenv("GEMINI_THINKING_BUDGET", "256")),
+        },
+    }
+
+
+def _gemini_text(result: dict) -> str:
+    """Extract visible Gemini text and explain responses exhausted by thinking."""
+    candidates = result.get("candidates") or []
+    if not candidates:
+        raise RuntimeError("Gemini returned no candidates")
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    text = "".join(str(part.get("text", "")) for part in parts if part.get("text")).strip()
+    if text:
+        return text
+    reason = candidates[0].get("finishReason", "unknown")
+    thoughts = (result.get("usageMetadata") or {}).get("thoughtsTokenCount", 0)
+    raise RuntimeError(
+        f"Gemini returned no text (finish_reason={reason}, thinking_tokens={thoughts})"
+    )
+
+
 def _openai_chat_url() -> str:
     base_url = os.getenv(
         "OPENAI_BASE_URL",
@@ -318,10 +344,10 @@ class PaperSummarizer:
         payload = {
             "system_instruction": {"parts": [{"text": system}]},
             "contents": [{"parts": [{"text": user}]}],
-            "generationConfig": {"maxOutputTokens": max_length * 2},
+            "generationConfig": _gemini_generation_config(max_length * 2),
         }
         result = _gemini_post(url, api_key, payload)
-        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return _gemini_text(result)
 
     def _call_anthropic(self, system: str, user: str, max_length: int, detailed: bool) -> str:
         api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -388,8 +414,12 @@ class PaperSummarizer:
             role = "model" if m["role"] == "assistant" else "user"
             contents.append({"role": role, "parts": [{"text": m["content"]}]})
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        result = _gemini_post(url, api_key, {"system_instruction": {"parts": [{"text": system}]}, "contents": contents})
-        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        result = _gemini_post(url, api_key, {
+            "system_instruction": {"parts": [{"text": system}]},
+            "contents": contents,
+            "generationConfig": _gemini_generation_config(2048),
+        })
+        return _gemini_text(result)
 
     def _dispatch_chat(self, system: str, messages: list, provider: Optional[str] = None) -> str:
         """Send a multi-turn chat request to the configured provider. messages = [{role, content}]"""
@@ -424,8 +454,12 @@ class PaperSummarizer:
                 role = "model" if m["role"] == "assistant" else "user"
                 contents.append({"role": role, "parts": [{"text": m["content"]}]})
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-            result = _gemini_post(url, api_key, {"system_instruction": {"parts": [{"text": system}]}, "contents": contents})
-            return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+            result = _gemini_post(url, api_key, {
+                "system_instruction": {"parts": [{"text": system}]},
+                "contents": contents,
+                "generationConfig": _gemini_generation_config(2048),
+            })
+            return _gemini_text(result)
 
         elif provider == "anthropic":
             api_key = os.getenv("ANTHROPIC_API_KEY")

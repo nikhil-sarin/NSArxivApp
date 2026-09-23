@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest import mock
 
-from app.summarizer import PaperSummarizer
+from app.summarizer import PaperSummarizer, _gemini_generation_config, _gemini_text
 
 
 class OpenAIProviderTests(unittest.TestCase):
@@ -63,6 +63,20 @@ class OpenAIProviderTests(unittest.TestCase):
                 PaperSummarizer(provider="ollama")._active_provider(),
                 "ollama",
             )
+
+    def test_gemini_reserves_thinking_budget_and_extracts_visible_text(self):
+        with mock.patch.dict(os.environ, {"GEMINI_THINKING_BUDGET": "128"}):
+            config = _gemini_generation_config(16)
+        self.assertEqual(config["maxOutputTokens"], 512)
+        self.assertEqual(config["thinkingConfig"]["thinkingBudget"], 128)
+        self.assertEqual(_gemini_text({
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+        }), "ok")
+        with self.assertRaisesRegex(RuntimeError, "Gemini returned no text"):
+            _gemini_text({
+                "candidates": [{"content": {}, "finishReason": "MAX_TOKENS"}],
+                "usageMetadata": {"thoughtsTokenCount": 16},
+            })
 
 
 if __name__ == "__main__":
