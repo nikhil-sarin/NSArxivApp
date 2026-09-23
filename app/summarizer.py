@@ -25,10 +25,11 @@ def _gemini_post(url: str, api_key: str, payload: dict, timeout: int = 120) -> d
 
 def _gemini_generation_config(max_output_tokens: int) -> dict:
     """Reserve enough output space for models that account for thinking tokens."""
+    thinking_budget = int(os.getenv("GEMINI_THINKING_BUDGET", "256"))
     return {
-        "maxOutputTokens": max(512, int(max_output_tokens)),
+        "maxOutputTokens": max(512, int(max_output_tokens) + thinking_budget),
         "thinkingConfig": {
-            "thinkingBudget": int(os.getenv("GEMINI_THINKING_BUDGET", "256")),
+            "thinkingBudget": thinking_budget,
         },
     }
 

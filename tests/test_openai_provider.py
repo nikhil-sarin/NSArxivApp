@@ -67,8 +67,10 @@ class OpenAIProviderTests(unittest.TestCase):
     def test_gemini_reserves_thinking_budget_and_extracts_visible_text(self):
         with mock.patch.dict(os.environ, {"GEMINI_THINKING_BUDGET": "128"}):
             config = _gemini_generation_config(16)
+            summary_config = _gemini_generation_config(600)
         self.assertEqual(config["maxOutputTokens"], 512)
         self.assertEqual(config["thinkingConfig"]["thinkingBudget"], 128)
+        self.assertEqual(summary_config["maxOutputTokens"], 728)
         self.assertEqual(_gemini_text({
             "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
         }), "ok")
