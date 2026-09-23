@@ -3256,17 +3256,22 @@ def render_citation_opportunities():
         item for item in all_opportunities
         if item not in reviewable and item["status"] in {"confirmed", "exported"}
     ]
+    dismissed = citation_opportunity_store.list_opportunities(
+        status="dismissed", limit=500
+    )
+    visible_opportunities = [*all_opportunities, *dismissed]
     if paper_lookup:
         lookup_id = citation_opportunities.arxiv_id_from_input(paper_lookup)
         if lookup_id:
-            displayed = citation_opportunity_store.list_actionable(
-                limit=500,
-                paper_id=lookup_id,
-            )
+            displayed = [
+                item for item in visible_opportunities
+                if item["paper_id"] == lookup_id
+                or item["paper_id"].startswith(f"{lookup_id}v")
+            ]
         else:
             query = paper_lookup.casefold()
             displayed = [
-                item for item in all_opportunities
+                item for item in visible_opportunities
                 if query in item["paper_id"].casefold()
                 or query in str(
                     papers_by_id.get(item["paper_id"], {}).get("title", "")
@@ -3276,7 +3281,7 @@ def render_citation_opportunities():
     else:
         view = st.radio(
             "View",
-            ["Strong matches", "All reviewable", "Sent to Email drafts"],
+            ["Strong matches", "All reviewable", "Sent to Email drafts", "Dismissed"],
             horizontal=True,
             key="citation_opportunity_view",
         )
@@ -3287,14 +3292,16 @@ def render_citation_opportunities():
             ]
         elif view == "All reviewable":
             displayed = reviewable
-        else:
+        elif view == "Sent to Email drafts":
             displayed = completed
+        else:
+            displayed = dismissed
         empty_message = f"No opportunities in {view.lower()}."
 
     if displayed:
         displayed_paper_ids = {item["paper_id"] for item in displayed}
         displayed = [
-            item for item in all_opportunities
+            item for item in visible_opportunities
             if item["paper_id"] in displayed_paper_ids
             and item["classification"] in {
                 "strong_citation_opportunity", "potentially_useful"
@@ -3539,13 +3546,31 @@ def render_citation_opportunities():
             can_export = any(
                 item["status"] in {"proposed", "needs_review"} for item in group
             )
-            if st.button(
+            is_dismissed = all(item["status"] == "dismissed" for item in group)
+            dismiss_col, export_col = st.columns([1, 2])
+            if is_dismissed and dismiss_col.button(
+                "Restore",
+                key=f"restore_citation_group_{opportunity['paper_id']}",
+                help="Return this paper and all of its matches to the review queue.",
+            ):
+                citation_opportunity_store.restore_dismissed_for_paper(
+                    opportunity["paper_id"]
+                )
+                st.rerun()
+            elif not is_dismissed and dismiss_col.button(
+                "Dismiss",
+                key=f"dismiss_citation_group_{opportunity['paper_id']}",
+                help="Hide this paper even though its citation matches may be relevant.",
+            ):
+                citation_opportunity_store.dismiss_for_paper(opportunity["paper_id"])
+                st.rerun()
+            if export_col.button(
                 (
                     "Send one combined email to Email drafts →"
                     if orchestrator_endpoint else "Email drafts not configured"
                 ),
                 key=f"confirm_citation_group_{opportunity['paper_id']}",
-                disabled=not can_export or not orchestrator_endpoint,
+                disabled=is_dismissed or not can_export or not orchestrator_endpoint,
                 type="primary",
             ):
                 try:

@@ -192,6 +192,31 @@ class CitationOpportunityTests(unittest.TestCase):
 
         self.assertEqual([item["opportunity_id"] for item in actionable], ["wanted"])
 
+    def test_dismissed_paper_is_hidden_terminal_and_restorable(self):
+        base = {
+            "analysis_version": "3", "catalogue_version": "1.0", "confidence": 0.8,
+            "status": "proposed", "rationale": "Relevant but not worth pursuing",
+            "counterargument": "Test", "evidence": [], "reference_check": {}, "model": {},
+            "paper_id": "2609.09520", "classification": "potentially_useful",
+        }
+        for contribution_id in ("redback", "mixing"):
+            citation_opportunity_store.save({
+                **base,
+                "opportunity_id": f"dismiss-{contribution_id}",
+                "contribution_id": contribution_id,
+            })
+
+        self.assertEqual(citation_opportunity_store.dismiss_for_paper("2609.09520"), 2)
+        self.assertEqual(citation_opportunity_store.list_actionable(), [])
+        self.assertEqual(
+            citation_opportunity_store.terminal_decision_contribution_ids("2609.09520"),
+            {"redback", "mixing"},
+        )
+        self.assertTrue(citation_opportunity_store.paper_is_dismissed("2609.09520"))
+        self.assertEqual(citation_opportunity_store.restore_dismissed_for_paper("2609.09520"), 2)
+        self.assertFalse(citation_opportunity_store.paper_is_dismissed("2609.09520"))
+        self.assertEqual(len(citation_opportunity_store.list_actionable()), 2)
+
     def test_arxiv_id_lookup_accepts_urls_labels_and_versions(self):
         self.assertEqual(
             citation_opportunities.arxiv_id_from_input(
