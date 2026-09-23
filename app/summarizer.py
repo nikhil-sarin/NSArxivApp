@@ -66,32 +66,33 @@ class PaperSummarizer:
     OLLAMA_DETAILED_TIMEOUT_SECONDS = 300
 
     def __init__(self, provider: Optional[str] = None, model: Optional[str] = None):
+        self._explicit_provider = provider.lower() if provider else None
         self.provider = (provider or os.getenv("SUMMARIZER_PROVIDER", "ollama")).lower()
         self._explicit_model = model
-        self.model = model or os.getenv("LLM_MODEL", "")
         # Provider-specific defaults
         self._defaults = {
             "ollama":    {"model": os.getenv("OLLAMA_MODEL", "llama3.1:latest"),    "host": os.getenv("OLLAMA_HOST", "http://localhost:11434")},
-            "gemini":    {"model": "gemini-2.0-flash"},
-            "anthropic": {"model": "claude-3-5-haiku-20241022"},
-            "openai":    {"model": "gpt-4o-mini"},
+            "gemini":    {"model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash")},
+            "anthropic": {"model": os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")},
+            "openai":    {"model": os.getenv("LLM_MODEL", "gpt-4o-mini")},
         }
-        if not self.model:
-            self.model = self._defaults.get(self.provider, {}).get("model", "")
+        self.model = model or self._model_for_provider(self.provider)
         self.last_fallback_reason = ""
+
+    def _model_for_provider(self, provider: str) -> str:
+        return self._defaults.get(provider, {}).get("model", "")
 
     def _active_provider(self) -> str:
         """Read provider from env each call so .env changes take effect without restart."""
+        if self._explicit_provider:
+            return self._explicit_provider
         return os.getenv("SUMMARIZER_PROVIDER", self.provider).lower()
 
     def _active_model(self) -> str:
         if self._explicit_model:
             return self._explicit_model
-        override = os.getenv("LLM_MODEL", "")
-        if override:
-            return override
         provider = self._active_provider()
-        return self._defaults.get(provider, {}).get("model", self.model)
+        return self._model_for_provider(provider) or self.model
 
     def summarize(self, text: str, max_length: int = 300, detailed: bool = False) -> str:
         self.last_fallback_reason = ""
@@ -381,7 +382,7 @@ class PaperSummarizer:
         )
         if provider != "gemini":
             return self._dispatch_chat(system, messages, provider=provider)
-        model = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash")
+        model = os.getenv("CHAT_LLM_MODEL", self._model_for_provider("gemini"))
         contents = []
         for m in messages:
             role = "model" if m["role"] == "assistant" else "user"
@@ -396,7 +397,7 @@ class PaperSummarizer:
         if provider == self._active_provider():
             self.model = self._active_model()
         else:
-            self.model = self._defaults.get(provider, {}).get("model", self.model)
+            self.model = self._model_for_provider(provider) or self.model
         if provider == "ollama":
             host = self._defaults["ollama"]["host"]
             num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
