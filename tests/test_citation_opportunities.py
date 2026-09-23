@@ -236,6 +236,7 @@ class CitationOpportunityTests(unittest.TestCase):
         contribution = {**CONTRIBUTION, "key_claims": ["A specific methodological limitation."]}
 
         def complete(system, user):
+            captured["system"] = system
             captured["payload"] = json.loads(user)
             return response
 
@@ -247,6 +248,8 @@ class CitationOpportunityTests(unittest.TestCase):
             captured["payload"]["contribution"]["key_claims"],
             ["A specific methodological limitation."],
         )
+        self.assertIn("exactly one of strong_citation_opportunity", captured["system"])
+        self.assertIn("JSON number from 0.0 to 1.0", captured["system"])
 
     def test_malformed_or_unsupported_model_output_is_insufficient(self):
         malformed = citation_opportunities.judge(
