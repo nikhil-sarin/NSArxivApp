@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -356,6 +356,58 @@ def update_triage(
     params.append(paper_id)
     with research_db.transaction() as db:
         db.execute(f"UPDATE triage SET {', '.join(fields)} WHERE paper_id = ?", params)
+
+
+def _paper_date(paper: Dict, fallback: str) -> date | None:
+    for field in ("published", "announced_date", "v1_date"):
+        value = paper.get(field)
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        try:
+            return date.fromisoformat(str(value or "")[:10])
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(fallback.replace("Z", "+00:00")).date()
+    except (AttributeError, ValueError):
+        return None
+
+
+def move_stale_inbox_to_read_later(
+    *, days: int = 7, now: datetime | None = None
+) -> int:
+    """Move untouched Inbox papers older than the rolling review window."""
+    if days < 1:
+        raise ValueError("days must be at least 1")
+    _migrate_legacy_if_needed()
+    now = now or datetime.now(timezone.utc)
+    cutoff = now.date() - timedelta(days=days)
+    with research_db.transaction() as db:
+        rows = db.execute(
+            """
+            SELECT p.paper_id, p.data_json, p.created_at
+            FROM papers p JOIN triage t USING(paper_id)
+            WHERE t.status = 'inbox'
+            """
+        ).fetchall()
+        stale_ids = [
+            row["paper_id"]
+            for row in rows
+            if (
+                paper_date := _paper_date(json.loads(row["data_json"]), row["created_at"])
+            ) is not None
+            and paper_date < cutoff
+        ]
+        if stale_ids:
+            placeholders = ", ".join("?" for _ in stale_ids)
+            db.execute(
+                f"UPDATE triage SET status = 'read_later', updated_at = ? "
+                f"WHERE paper_id IN ({placeholders}) AND status = 'inbox'",
+                [_now(), *stale_ids],
+            )
+    return len(stale_ids)
 
 
 def load_triage(status: Optional[str] = "inbox", limit: int = 100) -> List[Dict]:

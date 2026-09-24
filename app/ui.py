@@ -923,6 +923,9 @@ def _rescore_inbox() -> int:
 
 def render_inbox():
     """Render the daily paper triage and relevance-feedback workflow."""
+    moved = paper_store.move_stale_inbox_to_read_later()
+    if moved:
+        st.toast(f"Moved {moved} papers older than seven days to Read later.")
     st.header("Research Inbox")
     status_labels = {
         "inbox": "Inbox",

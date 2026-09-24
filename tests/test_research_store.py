@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -81,6 +82,35 @@ class ResearchStoreTests(unittest.TestCase):
             ["2601.00010"],
         )
         self.assertEqual(len(paper_store.load_all_papers()), 2)
+
+    def test_stale_inbox_papers_move_to_read_later(self):
+        papers = {
+            "recent": "2026-09-23",
+            "boundary": "2026-09-17",
+            "stale": "2026-09-16",
+            "already-read": "2026-08-01",
+        }
+        for paper_id, published in papers.items():
+            paper_store.save_paper(
+                paper_id,
+                {"arxiv_id": paper_id, "title": paper_id, "published": published},
+                "Summary",
+            )
+        paper_store.update_triage("already-read", status="read")
+
+        moved = paper_store.move_stale_inbox_to_read_later(
+            now=datetime(2026, 9, 24, 12, tzinfo=timezone.utc)
+        )
+
+        self.assertEqual(moved, 1)
+        self.assertEqual(paper_store.get_triage("recent")["status"], "inbox")
+        self.assertEqual(paper_store.get_triage("boundary")["status"], "inbox")
+        self.assertEqual(paper_store.get_triage("stale")["status"], "read_later")
+        self.assertEqual(paper_store.get_triage("already-read")["status"], "read")
+
+    def test_inbox_retention_days_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "days must be at least 1"):
+            paper_store.move_stale_inbox_to_read_later(days=0)
 
     def test_reading_library_supports_counted_stable_pages(self):
         for index in range(5):

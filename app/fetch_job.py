@@ -222,6 +222,9 @@ def run_query_search(query: str, categories: list[str], max_results: int, days_b
         summarizer=summarizer,
         vdb=vdb,
     )
+    moved = paper_store.move_stale_inbox_to_read_later()
+    if moved:
+        print(f"[inbox] moved {moved} papers older than seven days to Read later.")
     print(f"[{datetime.now()}] Done. Added {new_count} new papers.")
 
 
@@ -317,6 +320,9 @@ def run_new_submissions(
         total_new += new_count
         _save_fetch_watermark(pending_date)
         print(f"[{datetime.now()}] Done. Added {new_count} new papers.")
+    moved = paper_store.move_stale_inbox_to_read_later()
+    if moved:
+        print(f"[inbox] moved {moved} papers older than seven days to Read later.")
     eligibility = citation_discovery.refresh_active_eligibility(client)
     print(
         "[citations] refreshed active eligibility: "
