@@ -275,6 +275,7 @@ class CitationOpportunityTests(unittest.TestCase):
         )
         self.assertIn("exactly one of strong_citation_opportunity", captured["system"])
         self.assertIn("JSON number from 0.0 to 1.0", captured["system"])
+        self.assertIn("cites other literature", captured["system"])
 
     def test_malformed_or_unsupported_model_output_is_insufficient(self):
         malformed = citation_opportunities.judge(

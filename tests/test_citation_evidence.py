@@ -148,6 +148,10 @@ class CitationEvidenceTests(unittest.TestCase):
                 "generalised-csm-framework",
                 "We convert the terminal mass loss history to lookback time using a fixed wind velocity.",
             ),
+            (
+                "at2020blt-low-efficiency-grb",
+                "This gamma-ray quiet relativistic explosion had no prompt gamma-ray counterpart and shows how events evade traditional gamma-ray triggers.",
+            ),
         ]
         for contribution_id, text in cases:
             with self.subTest(contribution_id=contribution_id, text=text):

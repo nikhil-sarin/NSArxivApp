@@ -3425,7 +3425,7 @@ def render_citation_opportunities():
                     )
                     if item.get("export_error"):
                         st.warning(item["export_error"])
-            with st.expander("Edit or recreate this bundle", expanded=False):
+            with st.expander("Works and evidence", expanded=True):
                 label_by_id = {
                     item["id"]: item.get("name", item["id"])
                     for item in contributions
@@ -3551,7 +3551,7 @@ def render_citation_opportunities():
             else:
                 st.caption("A public corresponding-author email will be looked up from the arXiv source when you continue.")
             tone_note = st.text_input(
-                "Optional drafting note",
+                "Drafting instructions",
                 placeholder="For example: keep it brief; mention that I also develop Bilby",
                 key=f"citation_tone_{opportunity['paper_id']}",
             )
