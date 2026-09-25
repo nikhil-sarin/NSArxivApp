@@ -401,6 +401,40 @@ class CitationOpportunityTests(unittest.TestCase):
             "I would kindly ask you to consider citing these works.",
         )
 
+    def test_bundle_revision_ids_change_with_drafting_instructions(self):
+        opportunity = {
+            "opportunity_id": "cop_1", "paper_id": "2609.1",
+            "contribution_id": "redback", "catalogue_version": "1.2",
+            "classification": "strong_citation_opportunity", "confidence": 0.9,
+            "rationale": "Relevant", "counterargument": "May not apply",
+            "evidence": PACKET["passages"], "status": "confirmed",
+        }
+        paper = {"title": "A paper", "authors": ["A. Author"]}
+
+        first = citation_opportunities.build_import_bundle(
+            [opportunity], paper, {"redback": CONTRIBUTION},
+            tone_note="Mention the survey selection effect.",
+        )
+        retry = citation_opportunities.build_import_bundle(
+            [opportunity], paper, {"redback": CONTRIBUTION},
+            tone_note="Mention the survey selection effect.",
+        )
+        revised = citation_opportunities.build_import_bundle(
+            [opportunity], paper, {"redback": CONTRIBUTION},
+            tone_note="Focus on the model implementation.",
+        )
+
+        self.assertEqual(first["source"]["external_id"], retry["source"]["external_id"])
+        self.assertEqual(
+            first["candidates"][0]["external_id"],
+            retry["candidates"][0]["external_id"],
+        )
+        self.assertNotEqual(first["source"]["external_id"], revised["source"]["external_id"])
+        self.assertNotEqual(
+            first["candidates"][0]["external_id"],
+            revised["candidates"][0]["external_id"],
+        )
+
     def test_export_bounds_source_author_but_preserves_context_authors(self):
         authors = [f"Author {index} With A Long Name" for index in range(30)]
         opportunity = {

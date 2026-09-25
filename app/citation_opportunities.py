@@ -305,8 +305,11 @@ def group_by_paper(opportunities: list[dict]) -> list[list[dict]]:
     return list(grouped.values())
 
 
-def _group_id(opportunities: list[dict]) -> str:
-    material = "\0".join(sorted(item["opportunity_id"] for item in opportunities))
+def _group_id(opportunities: list[dict], tone_note: str = "") -> str:
+    material = "\0".join([
+        *sorted(item["opportunity_id"] for item in opportunities),
+        tone_note.strip(),
+    ])
     return "cop_group_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
 
 
@@ -360,7 +363,8 @@ def build_import_bundle(
         raise ValueError(f"unknown contributions: {', '.join(sorted(missing))}")
 
     paper_id = opportunities[0]["paper_id"]
-    group_id = _group_id(opportunities)
+    tone_note = tone_note.strip()
+    group_id = _group_id(opportunities, tone_note)
     contributions = []
     for contribution_id in dict.fromkeys(
         item["contribution_id"] for item in opportunities
@@ -416,7 +420,7 @@ def build_import_bundle(
             if len(contributions) > 1
             else "I would kindly ask you to consider citing this work."
         ),
-        "tone_note": tone_note.strip(),
+        "tone_note": tone_note,
     }
     if not context["evidence"]:
         raise ValueError("at least one evidence passage is required")
@@ -424,7 +428,7 @@ def build_import_bundle(
         "schema_version": "1.0",
         "source": {
             "kind": "paper", "source_system": "nsarxivapp.citation-opportunity-group",
-            "external_id": f"arxiv:{paper_id}", "title": paper.get("title", paper_id),
+            "external_id": f"arxiv:{paper_id}:{group_id}", "title": paper.get("title", paper_id),
             "author": _bounded_author_summary(paper.get("authors", [])), "permalink": f"https://arxiv.org/abs/{paper_id}",
             "trust": "external_untrusted",
             "metadata": {"arxiv_id": paper_id, "analysis_version": ANALYSIS_VERSION},
