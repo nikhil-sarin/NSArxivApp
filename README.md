@@ -333,6 +333,15 @@ python -m app.citation_backfill --days 90 --max-papers 100
 
 LocalOrchestrator handoff is a separate, server-side opt-in integration. Set `LOCAL_ORCHESTRATOR_URL` to display the Email drafts controls; `LOCAL_ORCHESTRATOR_UI_URL` and `LOCAL_ORCHESTRATOR_API_TOKEN` are optional deployment settings. Handoff posts a stable, bounded ImportBundle containing quotes and catalogue metadata, never full paper text or secrets. A public or shared deployment without these variables has no route into the maintainer's private orchestrator. Neither app sends email.
 
+Daily reading candidates can also be exported as context-only paper artifacts by
+setting `LOCAL_ORCHESTRATOR_EXPORT_RELEVANT_PAPERS=true`. This switch is
+independent of citation-email handoff and defaults off. Only papers above the
+configured reading relevance threshold are exported; the bundle contains
+bounded public metadata, the generated summary and relevance explanation, and
+no full PDF text or proposed action. This lets a private LocalOrchestrator use
+new papers in briefings without changing the behavior of public NSArxivApp
+installations.
+
 ---
 
 ## Architecture
