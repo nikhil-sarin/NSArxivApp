@@ -235,7 +235,7 @@ python -m app.fetch_job \
 
 In `new-submissions` mode, `--max-results 0` ingests every announcement in the selected categories. The job starts from the requested UTC announcement day and automatically backs up to the latest non-empty announcement date, so weekend cron runs still pick up the newest ArXivSelaa-style batch.
 
-Every announcement is checked for citation opportunities, but only papers that meet the reading-interest threshold enter the Inbox and visible Library. Reading interest is compared semantically against the researcher profile, explicit tracking priorities, active paper/grant ideas, enabled contribution catalogue entries, and relevance feedback. Papers below `TRACKING_RELEVANCE_THRESHOLD` (default `50`) are retained as monitoring-only records so citation coverage is not reduced. Tracking priorities and exact-phrase exclusions can be edited under **Profile**.
+When personal citation discovery is enabled, every announcement is checked for citation opportunities, but only papers that meet the reading-interest threshold enter the Inbox and visible Library. Reading interest is compared semantically against the researcher profile, explicit tracking priorities, active paper/grant ideas, an optionally configured contribution catalogue, and relevance feedback. Papers below `TRACKING_RELEVANCE_THRESHOLD` (default `50`) are retained as monitoring-only records so citation coverage is not reduced. Tracking priorities and exact-phrase exclusions can be edited under **Profile**.
 
 Keyword-search mode remains available:
 
@@ -314,7 +314,7 @@ Imports always enter `proposed` state. The app does not execute an action, and a
 
 ### Citation-opportunity workflow (optional)
 
-`config/contributions.example.json` contains the validated catalogue schema and verified Redback citation metadata. Copy it to the ignored `config/contributions.json` to customize private scope notes, or point `NSARXIV_CONTRIBUTIONS_PATH` at another file. Disabled entries are never analysed.
+`config/contributions.example.json` is an illustrative personal catalogue containing the maintainer's verified citation metadata. It is never loaded automatically. Copy it to the ignored `config/contributions.json` and replace or customize the entries for your own work, or point `NSARXIV_CONTRIBUTIONS_PATH` at another file. Without a configured catalogue, ordinary discovery, summarization, search, and paper triage continue normally and no maintainer-specific works affect relevance scoring. Disabled entries are never analysed.
 
 NSArxivApp does not require LocalOrchestrator. Public and standalone installations leave this personal workflow disabled, do not display its workspace, and make no LocalOrchestrator requests. Enable automatic checks explicitly with:
 
@@ -331,7 +331,7 @@ Backfill a bounded recent slice after expanding the catalogue:
 python -m app.citation_backfill --days 90 --max-papers 100
 ```
 
-LocalOrchestrator handoff is a separate opt-in integration. Set `LOCAL_ORCHESTRATOR_URL` to display the Email drafts controls; `LOCAL_ORCHESTRATOR_UI_URL` and `LOCAL_ORCHESTRATOR_API_TOKEN` are optional deployment settings. Handoff posts a stable, bounded ImportBundle containing quotes and catalogue metadata, never full paper text or secrets. Without these variables, all citation review and editing remains inside NSArxivApp. Neither app sends email.
+LocalOrchestrator handoff is a separate, server-side opt-in integration. Set `LOCAL_ORCHESTRATOR_URL` to display the Email drafts controls; `LOCAL_ORCHESTRATOR_UI_URL` and `LOCAL_ORCHESTRATOR_API_TOKEN` are optional deployment settings. Handoff posts a stable, bounded ImportBundle containing quotes and catalogue metadata, never full paper text or secrets. A public or shared deployment without these variables has no route into the maintainer's private orchestrator. Neither app sends email.
 
 ---
 

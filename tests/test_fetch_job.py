@@ -35,8 +35,8 @@ class FetchTrackingTests(unittest.TestCase):
             stack.enter_context(mock.patch("app.fetch_job.researcher_profile.load", return_value={}))
             stack.enter_context(mock.patch("app.fetch_job.idea_store.load_ideas", return_value=[]))
             stack.enter_context(mock.patch(
-                "app.fetch_job.contribution_catalogue.load",
-                return_value={"contributions": []},
+                "app.fetch_job.contribution_catalogue.enabled_contributions",
+                return_value=[],
             ))
             stack.enter_context(mock.patch(
                 "app.fetch_job.relevance.score_tracking_papers",
@@ -68,8 +68,8 @@ class FetchTrackingTests(unittest.TestCase):
     @mock.patch("app.fetch_job.researcher_profile.load", return_value={})
     @mock.patch("app.fetch_job.idea_store.load_ideas", return_value=[])
     @mock.patch(
-        "app.fetch_job.contribution_catalogue.load",
-        return_value={"contributions": []},
+        "app.fetch_job.contribution_catalogue.enabled_contributions",
+        return_value=[],
     )
     @mock.patch("app.fetch_job.relevance.score_tracking_papers")
     def test_monitor_only_paper_is_hidden_but_retained_for_citation_checks(

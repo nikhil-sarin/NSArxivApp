@@ -1,7 +1,8 @@
-import tempfile
 import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from app import contribution_catalogue
 
@@ -30,6 +31,30 @@ class ContributionCatalogueTests(unittest.TestCase):
             magnetar["canonical_citations"][0]["bibcode"],
             "2022MNRAS.516.4949S",
         )
+
+    def test_public_install_does_not_load_maintainer_example_implicitly(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            contribution_catalogue,
+            "DEFAULT_PATH",
+            Path(directory) / "contributions.json",
+        ), mock.patch.dict("os.environ", {}, clear=True):
+            self.assertIsNone(contribution_catalogue.load_if_configured())
+            self.assertEqual(contribution_catalogue.enabled_contributions(), [])
+            with self.assertRaisesRegex(
+                contribution_catalogue.CatalogueError,
+                "could not read contribution catalogue",
+            ):
+                contribution_catalogue.load()
+
+    def test_explicit_missing_catalogue_is_reported_as_configuration_error(self):
+        missing = "/definitely/missing/contributions.json"
+        with mock.patch.dict(
+            "os.environ", {"NSARXIV_CONTRIBUTIONS_PATH": missing}, clear=True
+        ):
+            with self.assertRaisesRegex(
+                contribution_catalogue.CatalogueError, "file not found"
+            ):
+                contribution_catalogue.load_if_configured()
 
     def test_duplicate_and_missing_identifier_errors_include_id(self):
         entry = {
