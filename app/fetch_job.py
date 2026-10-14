@@ -88,10 +88,7 @@ def _save_new_papers(
     positive = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == 1]
     negative = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == -1]
     ideas = idea_store.load_ideas("paper") + idea_store.load_ideas("grant")
-    contributions = [
-        item for item in contribution_catalogue.load()["contributions"]
-        if item.get("enabled", True)
-    ]
+    contributions = contribution_catalogue.enabled_contributions()
     scored = relevance.score_tracking_papers(
         papers,
         profile=researcher_profile.load(),

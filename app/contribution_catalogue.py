@@ -67,10 +67,32 @@ def configured_path() -> Path:
     return Path(os.getenv("NSARXIV_CONTRIBUTIONS_PATH", str(DEFAULT_PATH))).expanduser()
 
 
+def load_if_configured() -> dict | None:
+    """Load the deployer's catalogue without falling back to a personal example.
+
+    The repository is public, so a fresh installation must never silently rank
+    papers against the maintainer's works. An explicitly configured missing path
+    is still an error because it is almost certainly a deployment mistake.
+    """
+    path = configured_path()
+    if not path.exists():
+        if os.getenv("NSARXIV_CONTRIBUTIONS_PATH", "").strip():
+            raise CatalogueError(
+                f"could not read contribution catalogue {path}: file not found"
+            )
+        return None
+    return load(path)
+
+
+def enabled_contributions() -> list[dict]:
+    catalogue = load_if_configured()
+    if catalogue is None:
+        return []
+    return [item for item in catalogue["contributions"] if item.get("enabled", True)]
+
+
 def load(path: Path | None = None) -> dict:
     path = path or configured_path()
-    if not path.exists() and path == DEFAULT_PATH:
-        path = EXAMPLE_PATH
     try:
         return validate(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError) as exc:

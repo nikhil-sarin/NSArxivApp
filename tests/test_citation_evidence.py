@@ -129,7 +129,7 @@ class CitationEvidenceTests(unittest.TestCase):
         )["candidate"])
 
     def test_catalogue_rules_cover_bilby_mixing_and_csm_failure_modes(self):
-        catalogue = contribution_catalogue.load()
+        catalogue = contribution_catalogue.load(contribution_catalogue.EXAMPLE_PATH)
         by_id = {item["id"]: item for item in catalogue["contributions"]}
         cases = [
             (

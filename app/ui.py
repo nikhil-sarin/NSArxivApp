@@ -902,10 +902,7 @@ def _rescore_inbox() -> int:
         inbox,
         profile=researcher_profile.load(),
         ideas=_all_saved_ideas(),
-        contributions=[
-            item for item in contribution_catalogue.load()["contributions"]
-            if item.get("enabled", True)
-        ],
+        contributions=contribution_catalogue.enabled_contributions(),
         positive_papers=positive,
         negative_papers=negative,
         encode=_session_vector_db().embedder.encode,
