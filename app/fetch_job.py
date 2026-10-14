@@ -22,7 +22,7 @@ from app.pdf_extractor import PDFExtractor
 from app.summarizer import PaperSummarizer
 from app.summary_workflow import summarize_with_provenance
 from app.vector_db import PaperVectorDB
-from app import citation_discovery
+from app import citation_discovery, orchestrator_export
 from app import contribution_catalogue, idea_store, relevance, researcher_profile
 
 
@@ -188,6 +188,15 @@ def _save_new_papers(
                 )
             except Exception as exc:
                 print(f"  [warn] citation discovery failed for {pid}: {exc}")
+        if reading_candidate and orchestrator_export.enabled():
+            try:
+                exported = orchestrator_export.export_relevant_paper(metadata, summary)
+                print(
+                    f"  [orchestrator] exported relevant paper {pid} "
+                    f"as {exported['artifact_id']}"
+                )
+            except Exception as exc:
+                print(f"  [warn] LocalOrchestrator paper export failed for {pid}: {exc}")
         new_count += 1
     return new_count
 
