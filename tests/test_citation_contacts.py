@@ -43,6 +43,15 @@ def test_rendered_email_is_retained_when_source_lookup_fails():
     assert citation_contacts.display_name(contact) == "Public contact"
 
 
+def test_rendered_corresponding_author_marker_is_not_part_of_email():
+    text = "D. Adrien corrauthdylan.adrien@cea.fr Affiliation: CEA Paris-Saclay"
+    assert citation_contacts.contact_from_text(text) == {
+        "name": "Paper contact",
+        "email": "dylan.adrien@cea.fr",
+        "source": "paper full text",
+    }
+
+
 def test_no_email_returns_none():
     assert citation_contacts.contact_from_text("No public contact here") is None
 
