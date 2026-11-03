@@ -42,7 +42,13 @@ def contact_from_text(text: str) -> dict | None:
     match = EMAIL_RE.search(front_matter)
     if not match:
         return None
-    email = _valid_email(match.group(1))
+    rendered_email = re.sub(
+        r"^(?:corrauth|correspondingauthor)",
+        "",
+        match.group(1),
+        flags=re.IGNORECASE,
+    )
+    email = _valid_email(rendered_email)
     if not email:
         return None
     return {"name": "Paper contact", "email": email, "source": "paper full text"}
