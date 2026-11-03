@@ -16,6 +16,24 @@ def test_explicit_corresponding_author_and_email_are_paired():
     }
 
 
+def test_aanda_corrauth_email_is_paired_with_preceding_author():
+    tex = r"""
+    {D.} Adrien\orcidlink{0009-0002-9333-0182}\inst{1}\corrauth{dylan.adrien@cea.fr},
+    {D.} Turpin\inst{1}\email{damien.turpin@cea.fr},
+    """
+    assert citation_contacts.contact_from_tex(tex) == {
+        "name": "D. Adrien",
+        "email": "dylan.adrien@cea.fr",
+        "source": "arXiv source",
+    }
+
+
+def test_unpaired_author_email_is_not_treated_as_corresponding_contact():
+    assert citation_contacts.contact_from_tex(
+        r"{D.} Turpin\inst{1}\email{damien.turpin@cea.fr}"
+    ) is None
+
+
 def test_named_arxiv_source_contact_is_preferred_over_rendered_fallback():
     text = "Authors and affiliations\nContact: person@institute.edu\nAbstract"
     named = {

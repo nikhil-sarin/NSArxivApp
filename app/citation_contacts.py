@@ -56,6 +56,21 @@ def contact_from_text(text: str) -> dict | None:
 
 def contact_from_tex(tex: str) -> dict | None:
     """Prefer an explicit AASTeX corresponding-author/email declaration."""
+    for contact_match in re.finditer(
+        r"\\corrauth\s*\{([^{}]+)\}", tex, flags=re.I
+    ):
+        email = _valid_email(contact_match.group(1))
+        if not email:
+            continue
+        line_start = tex.rfind("\n", 0, contact_match.start()) + 1
+        author_prefix = tex[line_start:contact_match.start()].split("\\", 1)[0]
+        name = _clean_tex(author_prefix)
+        return {
+            "name": name or "Corresponding author",
+            "email": email,
+            "source": "arXiv source",
+        }
+
     email_matches = list(
         re.finditer(r"\\email\s*(?:\[[^]]*\])?\s*\{([^{}]+)\}", tex, flags=re.I)
     )
@@ -71,8 +86,13 @@ def contact_from_tex(tex: str) -> dict | None:
                 flags=re.I,
             )
         )
-        name = _clean_tex(names[-1].group(1)) if names else "Corresponding author"
-        return {"name": name or "Corresponding author", "email": email, "source": "arXiv source"}
+        if names:
+            name = _clean_tex(names[-1].group(1))
+            return {
+                "name": name or "Corresponding author",
+                "email": email,
+                "source": "arXiv source",
+            }
     return None
 
 
