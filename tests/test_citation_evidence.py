@@ -167,6 +167,10 @@ class CitationEvidenceTests(unittest.TestCase):
 
         redback = by_id["redback"]
         redback_cases = [
+            (
+                "We modeled the GRB afterglow with VegasAfterglow, whose built-in "
+                "Bayesian inference framework uses Bilby."
+            ),
             "We used nested sampling for parameter estimation of a multi-band kilonova light curve.",
             "We fitted the bolometric supernova light curve with a bespoke magnetar forward model.",
             "We used MOSFiT for Bayesian inference of the tidal disruption transient light curve.",
