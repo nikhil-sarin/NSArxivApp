@@ -29,6 +29,7 @@ class ArxivSearchResult:
     pdf_url: str
     categories: List[str]
     comment: Optional[str] = None
+    journal_ref: Optional[str] = None
 
 
 class ArxivClient:
@@ -116,6 +117,24 @@ class ArxivClient:
         )
         return [unescape(value).strip() for value in matches if value.strip()]
 
+    def _extract_table_value(self, html: str, label: str) -> Optional[str]:
+        """Extract an arXiv metadata value from current or legacy table markup."""
+        escaped_label = re.escape(label)
+        patterns = (
+            # Current abstract pages put the label and value in adjacent cells.
+            rf'<t[dh]\b[^>]*>\s*(?:<span\b[^>]*>)?\s*{escaped_label}:?\s*'
+            rf'(?:</span>)?\s*</t[dh]>\s*<td\b[^>]*>(.*?)</td>',
+            # Older pages put a descriptor span and the value in one cell.
+            rf'<span\b[^>]*class="[^"]*\bdescriptor\b[^"]*"[^>]*>\s*'
+            rf'{escaped_label}:?\s*</span>\s*(.*?)\s*</td>',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, html, flags=re.I | re.S)
+            if match:
+                value = self._strip_html(match.group(1))
+                return value or None
+        return None
+
     def get_result_by_id(self, arxiv_id: str) -> ArxivSearchResult:
         """Fetch a single paper directly from its abstract page, avoiding the export API."""
         response = requests.get(
@@ -157,12 +176,8 @@ class ArxivClient:
             subjects_text = self._strip_html(subjects_match.group(1))
             categories = [part.strip() for part in subjects_text.split(";") if part.strip()]
 
-        comments_match = re.search(
-            r'<span class="descriptor">Comments:</span>\s*(.*?)\s*</td>',
-            html,
-            flags=re.I | re.S,
-        )
-        comment = self._strip_html(comments_match.group(1)) if comments_match else None
+        comment = self._extract_table_value(html, "Comments")
+        journal_ref = self._extract_table_value(html, "Journal reference")
 
         return ArxivSearchResult(
             entry_id=f"https://arxiv.org/abs/{canonical_id}",
@@ -173,6 +188,7 @@ class ArxivClient:
             pdf_url=pdf_url,
             categories=categories,
             comment=comment,
+            journal_ref=journal_ref,
         )
 
     def _search_html(
@@ -366,11 +382,11 @@ class ArxivClient:
 
         if author:
             # ArXiv author search: quote multi-word names so they match as a phrase,
-            # not as separate tokens (which would match "Nikhil X" and "Y Sarin" separately).
-            # Also support lastname_firstinitial format e.g. sarin_n.
+            # not as separate tokens (which would match unrelated first and last names).
+            # Also support lastname_firstinitial format e.g. researcher_a.
             clean_author = author.strip().strip('"').strip("'")
             if " " in clean_author and "_" not in clean_author:
-                # Convert "Nikhil Sarin" -> "sarin_n" for most precise ArXiv matching,
+                # Convert "Alice Researcher" -> "researcher_a" for precise arXiv matching,
                 # but also keep the quoted form as a fallback OR clause.
                 parts_name = clean_author.split()
                 lastname = parts_name[-1].lower()
@@ -515,7 +531,9 @@ class ArxivClient:
             "abstract": result.summary,
             "published": result.published.isoformat(),
             "pdf_url": result.pdf_url,
-            "arxiv_id": result.entry_id.split("/")[-1],
+            "arxiv_id": re.sub(r"v\d+$", "", result.entry_id.split("/")[-1]),
             "categories": result.categories,
             "comment": result.comment,
+            "journal_ref": result.journal_ref,
+            "doi": getattr(result, "doi", None),
         }

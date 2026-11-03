@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +13,9 @@ from typing import Iterator, Optional
 
 
 DB_PATH = Path("data/research.db")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
+_SCHEMA_LOCK = threading.Lock()
+_INITIALIZED_DATABASES: dict[str, tuple[int, int]] = {}
 
 
 def _now() -> str:
@@ -25,11 +28,23 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(db_path, timeout=30)
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA busy_timeout=30000")
-    _ensure_schema(connection)
+    identity = _database_identity(db_path)
+    cache_key = str(db_path.resolve())
+    if _INITIALIZED_DATABASES.get(cache_key) != identity:
+        with _SCHEMA_LOCK:
+            identity = _database_identity(db_path)
+            if _INITIALIZED_DATABASES.get(cache_key) != identity:
+                _ensure_schema(connection, db_path=db_path)
+                _INITIALIZED_DATABASES[cache_key] = _database_identity(db_path)
     return connection
+
+
+def _database_identity(db_path: Path) -> tuple[int, int]:
+    """Identify a database file so recreated test databases are migrated again."""
+    stat = db_path.stat()
+    return stat.st_dev, stat.st_ino
 
 
 @contextmanager
@@ -46,7 +61,43 @@ def transaction(db_path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
-def _ensure_schema(connection: sqlite3.Connection) -> None:
+def _existing_schema_version(connection: sqlite3.Connection) -> int:
+    table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'"
+    ).fetchone()
+    if not table:
+        return 0
+    row = connection.execute(
+        "SELECT value FROM schema_meta WHERE key='schema_version'"
+    ).fetchone()
+    try:
+        return int(row[0]) if row else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _backup_before_migration(connection: sqlite3.Connection, db_path: Path, old_version: int) -> Path | None:
+    has_data = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='papers'"
+    ).fetchone()
+    if not has_data or old_version >= SCHEMA_VERSION:
+        return None
+    backup_dir = db_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = backup_dir / f"{db_path.stem}-schema-{old_version}-to-{SCHEMA_VERSION}-{stamp}.db"
+    target = sqlite3.connect(backup_path)
+    try:
+        connection.backup(target)
+    finally:
+        target.close()
+    return backup_path
+
+
+def _ensure_schema(connection: sqlite3.Connection, *, db_path: Path) -> None:
+    connection.execute("PRAGMA journal_mode=WAL")
+    old_version = _existing_schema_version(connection)
+    _backup_before_migration(connection, db_path, old_version)
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS schema_meta (
@@ -167,6 +218,39 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             PRIMARY KEY(idea_type, idea_id)
         );
+
+        CREATE TABLE IF NOT EXISTS citation_opportunities (
+            opportunity_id TEXT PRIMARY KEY,
+            paper_id TEXT NOT NULL,
+            contribution_id TEXT NOT NULL,
+            analysis_version TEXT NOT NULL,
+            catalogue_version TEXT NOT NULL,
+            classification TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            status TEXT NOT NULL DEFAULT 'proposed',
+            data_json TEXT NOT NULL,
+            export_status TEXT NOT NULL DEFAULT '',
+            export_error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_triage_status_score
+            ON triage(status, relevance_score DESC, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_documents_owner
+            ON documents(owner_type, owner_id, kind);
+        CREATE INDEX IF NOT EXISTS idx_documents_paper
+            ON documents(paper_id, kind);
+        CREATE INDEX IF NOT EXISTS idx_jobs_status_created
+            ON jobs(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_jobs_kind_created
+            ON jobs(kind, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_citations_status_classification
+            ON citation_opportunities(status, classification, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_citations_paper
+            ON citation_opportunities(paper_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_citations_analysis
+            ON citation_opportunities(paper_id, contribution_id, analysis_version, catalogue_version);
         """
     )
     connection.execute(
@@ -312,6 +396,23 @@ def has_documents(owner_type: str, owner_id: str, kind: Optional[str] = None) ->
             sql += " AND kind=?"
             params.append(kind)
         return db.execute(sql + " LIMIT 1", params).fetchone() is not None
+    finally:
+        db.close()
+
+
+def documents_for_owner(owner_type: str, owner_id: str, limit: int = 200) -> list[dict]:
+    db = connect()
+    try:
+        rows = db.execute(
+            "SELECT * FROM documents WHERE owner_type=? AND owner_id=? ORDER BY document_id LIMIT ?",
+            (owner_type, owner_id, limit),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["locator"] = json.loads(item.pop("locator_json") or "{}")
+            result.append(item)
+        return result
     finally:
         db.close()
 

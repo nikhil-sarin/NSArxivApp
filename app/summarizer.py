@@ -23,6 +23,41 @@ def _gemini_post(url: str, api_key: str, payload: dict, timeout: int = 120) -> d
     return response.json()
 
 
+def _gemini_generation_config(max_output_tokens: int) -> dict:
+    """Reserve enough output space for models that account for thinking tokens."""
+    thinking_budget = int(os.getenv("GEMINI_THINKING_BUDGET", "256"))
+    return {
+        "maxOutputTokens": max(512, int(max_output_tokens) + thinking_budget),
+        "thinkingConfig": {
+            "thinkingBudget": thinking_budget,
+        },
+    }
+
+
+def _gemini_text(result: dict) -> str:
+    """Extract visible Gemini text and explain responses exhausted by thinking."""
+    candidates = result.get("candidates") or []
+    if not candidates:
+        raise RuntimeError("Gemini returned no candidates")
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    text = "".join(str(part.get("text", "")) for part in parts if part.get("text")).strip()
+    if text:
+        return text
+    reason = candidates[0].get("finishReason", "unknown")
+    thoughts = (result.get("usageMetadata") or {}).get("thoughtsTokenCount", 0)
+    raise RuntimeError(
+        f"Gemini returned no text (finish_reason={reason}, thinking_tokens={thoughts})"
+    )
+
+
+def _openai_chat_url() -> str:
+    base_url = os.getenv(
+        "OPENAI_BASE_URL",
+        "https://api.openai.com/v1",
+    ).rstrip("/")
+    return f"{base_url}/chat/completions"
+
+
 def _build_prompt(text: str, max_length: int, detailed: bool) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for the given mode."""
     if detailed:
@@ -58,34 +93,38 @@ class PaperSummarizer:
     OLLAMA_DETAILED_TIMEOUT_SECONDS = 300
 
     def __init__(self, provider: Optional[str] = None, model: Optional[str] = None):
+        self._explicit_provider = provider.lower() if provider else None
         self.provider = (provider or os.getenv("SUMMARIZER_PROVIDER", "ollama")).lower()
         self._explicit_model = model
-        self.model = model or os.getenv("LLM_MODEL", "")
         # Provider-specific defaults
         self._defaults = {
             "ollama":    {"model": os.getenv("OLLAMA_MODEL", "llama3.1:latest"),    "host": os.getenv("OLLAMA_HOST", "http://localhost:11434")},
-            "gemini":    {"model": "gemini-2.0-flash"},
-            "anthropic": {"model": "claude-3-5-haiku-20241022"},
-            "openai":    {"model": "gpt-4o-mini"},
+            "gemini":    {"model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash")},
+            "anthropic": {"model": os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")},
+            "openai":    {"model": os.getenv("LLM_MODEL", "gpt-4o-mini")},
         }
-        if not self.model:
-            self.model = self._defaults.get(self.provider, {}).get("model", "")
+        self.model = model or self._model_for_provider(self.provider)
+        self.last_fallback_reason = ""
+
+    def _model_for_provider(self, provider: str) -> str:
+        return self._defaults.get(provider, {}).get("model", "")
 
     def _active_provider(self) -> str:
         """Read provider from env each call so .env changes take effect without restart."""
+        if self._explicit_provider:
+            return self._explicit_provider
         return os.getenv("SUMMARIZER_PROVIDER", self.provider).lower()
 
     def _active_model(self) -> str:
         if self._explicit_model:
             return self._explicit_model
-        override = os.getenv("LLM_MODEL", "")
-        if override:
-            return override
         provider = self._active_provider()
-        return self._defaults.get(provider, {}).get("model", self.model)
+        return self._model_for_provider(provider) or self.model
 
     def summarize(self, text: str, max_length: int = 300, detailed: bool = False) -> str:
+        self.last_fallback_reason = ""
         if not text or len(text) < 100:
+            self.last_fallback_reason = "input_too_short"
             return text[:max_length] if text else ""
         if len(text) > self.CONTEXT_LIMIT:
             if not detailed:
@@ -123,6 +162,7 @@ class PaperSummarizer:
             return self.complete(system_prompt, user_prompt, max_length=max_length, detailed=detailed)
         except Exception as e:
             provider = self._active_provider()
+            self.last_fallback_reason = f"{type(e).__name__}: {e}"[:500]
             print(f"[summarizer] {provider} failed: {e}. Using fallback.")
             return self._fallback_summarize(text, max_length)
 
@@ -218,6 +258,7 @@ class PaperSummarizer:
             return self.complete(system, user, max_length=max_length, detailed=detailed)
         except Exception as e:
             provider = self._active_provider()
+            self.last_fallback_reason = f"section {chunk_index}/{total_chunks}: {type(e).__name__}: {e}"[:500]
             print(f"[summarizer] {provider} failed on section {chunk_index}/{total_chunks}: {e}. Using fallback.")
             return self._fallback_summarize(chunk, max_length)
 
@@ -268,6 +309,7 @@ class PaperSummarizer:
             return self.complete(system, user, max_length=max_length, detailed=detailed)
         except Exception as e:
             provider = self._active_provider()
+            self.last_fallback_reason = f"synthesis: {type(e).__name__}: {e}"[:500]
             print(f"[summarizer] {provider} failed during summary synthesis: {e}. Using fallback.")
             return self._fallback_summarize(fallback_text, max_length)
 
@@ -303,10 +345,10 @@ class PaperSummarizer:
         payload = {
             "system_instruction": {"parts": [{"text": system}]},
             "contents": [{"parts": [{"text": user}]}],
-            "generationConfig": {"maxOutputTokens": max_length * 2},
+            "generationConfig": _gemini_generation_config(max_length * 2),
         }
         result = _gemini_post(url, api_key, payload)
-        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return _gemini_text(result)
 
     def _call_anthropic(self, system: str, user: str, max_length: int, detailed: bool) -> str:
         api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -335,7 +377,7 @@ class PaperSummarizer:
         if not api_key:
             raise ValueError("OPENAI_API_KEY not set")
         response = requests.post(
-            "https://api.openai.com/v1/chat/completions",
+            _openai_chat_url(),
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={
                 "model": self.model,
@@ -357,23 +399,28 @@ class PaperSummarizer:
         *,
         contains_private_data: bool = False,
     ) -> str:
-        """Prefer Gemini only when the active data-routing policy permits it."""
+        """Dispatch chat through the explicit public route while enforcing privacy."""
         api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        preferred_public = os.getenv("PUBLIC_LLM_PROVIDER", self._active_provider()).strip().lower()
         provider = privacy.choose_provider(
             self._active_provider(),
-            preferred_cloud_provider="gemini" if api_key else None,
+            preferred_cloud_provider=preferred_public,
             contains_private_data=contains_private_data,
         )
         if provider != "gemini":
             return self._dispatch_chat(system, messages, provider=provider)
-        model = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash")
+        model = os.getenv("CHAT_LLM_MODEL", self._model_for_provider("gemini"))
         contents = []
         for m in messages:
             role = "model" if m["role"] == "assistant" else "user"
             contents.append({"role": role, "parts": [{"text": m["content"]}]})
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        result = _gemini_post(url, api_key, {"system_instruction": {"parts": [{"text": system}]}, "contents": contents})
-        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        result = _gemini_post(url, api_key, {
+            "system_instruction": {"parts": [{"text": system}]},
+            "contents": contents,
+            "generationConfig": _gemini_generation_config(2048),
+        })
+        return _gemini_text(result)
 
     def _dispatch_chat(self, system: str, messages: list, provider: Optional[str] = None) -> str:
         """Send a multi-turn chat request to the configured provider. messages = [{role, content}]"""
@@ -381,7 +428,7 @@ class PaperSummarizer:
         if provider == self._active_provider():
             self.model = self._active_model()
         else:
-            self.model = self._defaults.get(provider, {}).get("model", self.model)
+            self.model = self._model_for_provider(provider) or self.model
         if provider == "ollama":
             host = self._defaults["ollama"]["host"]
             num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
@@ -408,8 +455,12 @@ class PaperSummarizer:
                 role = "model" if m["role"] == "assistant" else "user"
                 contents.append({"role": role, "parts": [{"text": m["content"]}]})
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-            result = _gemini_post(url, api_key, {"system_instruction": {"parts": [{"text": system}]}, "contents": contents})
-            return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+            result = _gemini_post(url, api_key, {
+                "system_instruction": {"parts": [{"text": system}]},
+                "contents": contents,
+                "generationConfig": _gemini_generation_config(2048),
+            })
+            return _gemini_text(result)
 
         elif provider == "anthropic":
             api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -429,7 +480,7 @@ class PaperSummarizer:
             if not api_key:
                 raise ValueError("OPENAI_API_KEY not set")
             response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
+                _openai_chat_url(),
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={"model": self.model, "max_tokens": 1024, "messages": [{"role": "system", "content": system}] + messages},
                 timeout=120,
@@ -443,6 +494,8 @@ class PaperSummarizer:
     # ------------------------------------------------------------------
 
     def _fallback_summarize(self, text: str, max_length: int = 300) -> str:
+        if not self.last_fallback_reason:
+            self.last_fallback_reason = "deterministic_fallback"
         lines = text.split("\n")
         for line in lines:
             if any(k in line.lower() for k in ["abstract", "summary", "introduction", "conclusion"]):

@@ -43,6 +43,8 @@ class AnnouncementPaper:
     v1_date: str
     abs_url: str
     pdf_url: str
+    comment: str = ""
+    journal_ref: str = ""
 
 
 def parse_catchup_new_ids(html: str) -> list[str]:
@@ -169,6 +171,8 @@ def parse_get_record(xml_bytes: bytes) -> AnnouncementPaper | None:
     primary_category = categories[0] if categories else ""
     title = " ".join((record.findtext(".//raw:title", namespaces=NS) or "").split())
     abstract = " ".join((record.findtext(".//raw:abstract", namespaces=NS) or "").split())
+    comment = " ".join((record.findtext(".//raw:comments", namespaces=NS) or "").split())
+    journal_ref = " ".join((record.findtext(".//raw:journal-ref", namespaces=NS) or "").split())
     authors = _split_authors((record.findtext(".//raw:authors", namespaces=NS) or "").strip())
     versions = record.findall(".//raw:version", NS)
     v1_date = ""
@@ -187,6 +191,8 @@ def parse_get_record(xml_bytes: bytes) -> AnnouncementPaper | None:
         v1_date=v1_date,
         abs_url=f"https://arxiv.org/abs/{arxiv_id}",
         pdf_url=f"https://arxiv.org/pdf/{arxiv_id}",
+        comment=comment,
+        journal_ref=journal_ref,
     )
 
 
@@ -204,6 +210,38 @@ def fetch_record(arxiv_id: str) -> AnnouncementPaper | None:
     return parse_get_record(response.content)
 
 
+def fetch_record_from_abs_page(
+    arxiv_id: str,
+    *,
+    list_name: str,
+    target_date: date,
+) -> AnnouncementPaper:
+    """Fetch metadata from the public abstract page when OAI-PMH is unavailable."""
+    from app.arxiv_client import ArxivClient
+
+    client = ArxivClient()
+    result = client.get_result_by_id(arxiv_id)
+    metadata = client.get_paper_metadata(result)
+    categories = list(metadata.get("categories", []))
+    if list_name not in categories:
+        categories.insert(0, list_name)
+    v1_date = result.published.date().isoformat()
+    return AnnouncementPaper(
+        arxiv_id=arxiv_id,
+        title=str(metadata.get("title", arxiv_id)),
+        authors=list(metadata.get("authors", [])),
+        abstract=str(metadata.get("abstract", "")),
+        primary_category=list_name,
+        categories=categories,
+        announced_date=target_date.isoformat(),
+        v1_date=v1_date,
+        abs_url=f"https://arxiv.org/abs/{arxiv_id}",
+        pdf_url=str(metadata.get("pdf_url") or f"https://arxiv.org/pdf/{arxiv_id}"),
+        comment=str(metadata.get("comment") or ""),
+        journal_ref=str(metadata.get("journal_ref") or ""),
+    )
+
+
 def fetch_rss_papers(list_name: str, target_date: date) -> list[AnnouncementPaper] | None:
     """Fetch the latest RSS papers if the feed date matches target_date."""
     response = _get_with_retry(RSS_URL.format(list_name=list_name))
@@ -218,10 +256,26 @@ def fetch_via_catchup(list_name: str, target_date: date) -> list[AnnouncementPap
     """Backfill older dates via catchup + OAI."""
     ids = fetch_catchup_ids(list_name, target_date)
     papers: list[AnnouncementPaper] = []
+    oai_available = True
     for index, arxiv_id in enumerate(ids):
         if index > 0:
             time.sleep(RATE_LIMIT_SECONDS)
-        paper = fetch_record(arxiv_id)
+        if oai_available:
+            try:
+                paper = fetch_record(arxiv_id)
+            except requests.RequestException as exc:
+                oai_available = False
+                print(
+                    f"  [warn] OAI-PMH unavailable for {arxiv_id}; "
+                    f"using abstract-page metadata for this batch: {exc}"
+                )
+                paper = fetch_record_from_abs_page(
+                    arxiv_id, list_name=list_name, target_date=target_date
+                )
+        else:
+            paper = fetch_record_from_abs_page(
+                arxiv_id, list_name=list_name, target_date=target_date
+            )
         if paper is not None:
             papers.append(paper)
     return papers
@@ -246,7 +300,8 @@ def paper_to_metadata(paper: AnnouncementPaper) -> dict:
         "pdf_url": paper.pdf_url,
         "arxiv_id": paper.arxiv_id,
         "categories": paper.categories,
-        "comment": "",
+        "comment": paper.comment,
+        "journal_ref": paper.journal_ref,
         "primary_category": paper.primary_category,
         "announced_date": paper.announced_date,
         "v1_date": paper.v1_date,

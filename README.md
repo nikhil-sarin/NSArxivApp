@@ -14,6 +14,7 @@ A full-stack application to discover, summarize, and explore connections between
 - **Project intelligence**: Link papers, inspect Git/Notion-export changes, record meetings, and generate private weekly briefings
 - **Research operations**: Emerging-theme detection, durable background indexing jobs, index repair, and persisted model evaluations
 - **Handwritten notes**: Local vision-model transcription directly into citation-aware paper notes
+- **Citation opportunities**: Manually compare a full paper with a versioned personal contribution catalogue, inspect verbatim evidence/reference checks, and explicitly propose a local email-draft action
 - **Knowledge graph**: Visualize connections between papers by category and authors
 - **Persistent library**: Papers, summaries, and metadata are saved locally and reload automatically on restart
 - **Scheduled fetch**: Run automated daily searches or ArXivSelaa-style new-submission fetches via cron or macOS launchd
@@ -29,6 +30,18 @@ A full-stack application to discover, summarize, and explore connections between
 git clone git@github.com:nikhil-sarin/NSArxivApp.git
 cd NSArxivApp
 pip install -r requirements.txt
+```
+
+For an editable development installation with test and lint tools:
+
+```bash
+pip install -e '.[dev]'
+```
+
+For a reproducible installation using the committed dependency lock:
+
+```bash
+uv sync --locked
 ```
 
 Copy and configure the environment file:
@@ -153,8 +166,13 @@ LLM_MODEL=claude-3-5-haiku-20241022  # optional
 ```
 SUMMARIZER_PROVIDER=openai
 OPENAI_API_KEY=your-key-here
+OPENAI_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini                # optional
 ```
+
+`OPENAI_BASE_URL` may point to an OpenAI-compatible service; the app appends
+`/chat/completions`. Set `PUBLIC_LLM_PROVIDER=openai` to keep public-paper chat
+on this route even if Gemini credentials are also present.
 
 ### Remote Ollama (workstation offload)
 
@@ -210,12 +228,14 @@ Automatically fetch and summarize new papers on a schedule, even when the UI is 
 ```bash
 python -m app.fetch_job \
   --mode new-submissions \
-  --categories astro-ph.HE gr-qc \
-  --max-results 20 \
+  --categories astro-ph.HE astro-ph.SR gr-qc \
+  --max-results 0 \
   --days-back 1
 ```
 
-In `new-submissions` mode, the job starts from the requested UTC announcement day and automatically backs up to the latest non-empty announcement date, so weekend cron runs still pick up the newest ArXivSelaa-style batch.
+In `new-submissions` mode, `--max-results 0` ingests every announcement in the selected categories. The job starts from the requested UTC announcement day and automatically backs up to the latest non-empty announcement date, so weekend cron runs still pick up the newest ArXivSelaa-style batch.
+
+When personal citation discovery is enabled, every announcement is checked for citation opportunities, but only papers that meet the reading-interest threshold enter the Inbox and visible Library. Reading interest is compared semantically against the researcher profile, explicit tracking priorities, active paper/grant ideas, an optionally configured contribution catalogue, and relevance feedback. Papers below `TRACKING_RELEVANCE_THRESHOLD` (default `50`) are retained as monitoring-only records so citation coverage is not reduced. Tracking priorities and exact-phrase exclusions can be edited under **Profile**.
 
 Keyword-search mode remains available:
 
@@ -232,7 +252,7 @@ python -m app.fetch_job \
 
 Add to your crontab (`crontab -e`):
 ```
-0 7 * * * cd /path/to/NSArxivApp && /path/to/python -m app.fetch_job --mode new-submissions --categories astro-ph.HE --max-results 20 --days-back 1 >> /path/to/NSArxivApp/data/fetch.log 2>&1
+0 7 * * * cd /path/to/NSArxivApp && /path/to/python -m app.fetch_job --mode new-submissions --categories astro-ph.HE astro-ph.SR astro-ph.CO astro-ph.GA astro-ph.IM gr-qc --max-results 0 --days-back 1 >> /path/to/NSArxivApp/data/fetch.log 2>&1
 ```
 
 The **Schedule** tab can also install a managed Linux cron entry for you directly.
@@ -253,7 +273,7 @@ Use the **Schedule** tab in the app UI to generate and install a launchd plist a
 6. **Knowledge graph**: Visualize category and author connections in the Knowledge Graph tab
 7. **Schedule**: Set up automated daily fetching in the Schedule tab
 8. **Projects**: Attach repositories, a Notion Markdown export, meetings, and paper evidence; imported TheLocalWhisperer actions remain proposals until explicitly approved
-9. **Research Ops**: Run background full-text indexing, inspect durable job state, compare model routes, and track emerging themes over time
+9. **Library Health**: Inspect search indexing and model checks, and review supported trends with representative papers
 
 ---
 
@@ -291,6 +311,36 @@ Upload a JSON list in a project's **Actions** view. Only these action types are 
 ```
 
 Imports always enter `proposed` state. The app does not execute an action, and an action cannot be marked `executed` until it has first been explicitly approved.
+
+### Citation-opportunity workflow (optional)
+
+Contribution matching is disabled unless the deployer supplies a private catalogue through `NSARXIV_CONTRIBUTIONS_PATH` or the ignored local path `config/contributions.json`. Personal catalogues must not be committed to this public repository. Without one, ordinary discovery, summarization, search, and paper triage continue normally. Disabled entries are never analysed.
+
+NSArxivApp does not require LocalOrchestrator. Public and standalone installations leave this personal workflow disabled, do not display its workspace, and make no LocalOrchestrator requests. Enable automatic checks explicitly with:
+
+```env
+AUTO_CITATION_DISCOVERY=true
+CITATION_OPPORTUNITY_MAX_AGE_DAYS=30
+```
+
+Newly ingested papers are then checked using deterministic signal and reference filters before any model call. Only filtered candidates receive a strict evidence-grounded model judgement. Unsent matches are removed when arXiv reports a journal reference, DOI, or acceptance/publication comment, or when they pass the configurable opportunity window (30 days by default). The **Citation Opportunities** view is the local manual review queue; its controls can create, edit, dismiss, reject, restore, or rerun a match without another service.
+
+Backfill a bounded recent slice after expanding the catalogue:
+
+```bash
+python -m app.citation_backfill --days 90 --max-papers 100
+```
+
+LocalOrchestrator handoff is a separate, server-side opt-in integration. Set `LOCAL_ORCHESTRATOR_URL` to display the Email drafts controls; `LOCAL_ORCHESTRATOR_UI_URL` and `LOCAL_ORCHESTRATOR_API_TOKEN` are optional deployment settings. Handoff posts a stable, bounded ImportBundle containing quotes and catalogue metadata, never full paper text or secrets. A public or shared deployment without these variables has no route into the maintainer's private orchestrator. Neither app sends email.
+
+Daily reading candidates can also be exported as context-only paper artifacts by
+setting `LOCAL_ORCHESTRATOR_EXPORT_RELEVANT_PAPERS=true`. This switch is
+independent of citation-email handoff and defaults off. Only papers above the
+configured reading relevance threshold are exported; the bundle contains
+bounded public metadata, the generated summary and relevance explanation, and
+no full PDF text or proposed action. This lets a private LocalOrchestrator use
+new papers in briefings without changing the behavior of public NSArxivApp
+installations.
 
 ---
 
@@ -330,6 +380,34 @@ Run the standard-library test suite with the Python environment used by the app:
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+CI runs the same suite on Python 3.10 and 3.12 for every pull request.
+
+## Maintenance
+
+Long-running indexing, citation discovery, and summary-regeneration work is stored in SQLite. The app requeues a job that was running when its process stopped and resumes it after startup. Job progress and failures are visible under **Library Health → Search index**.
+
+Run local configuration and storage diagnostics without sending any network requests:
+
+```bash
+python -m app.maintenance doctor
+```
+
+Create a consistent SQLite backup (the default retains the latest 14 backups):
+
+```bash
+python -m app.maintenance backup
+```
+
+Restore a backup while the Streamlit app is stopped:
+
+```bash
+python -m app.maintenance restore --from data/backups/research-YYYYMMDDTHHMMSSZ.db --yes
+```
+
+The database is also backed up automatically before a schema migration. PDF caches, generated reports, and Chroma indexes are reproducible and are not included in the SQLite backup.
+
+Generated summaries now record provider, model, input source, workflow version, completion state, and fallback reason. Existing summaries remain readable and are labelled as legacy records until regenerated.
 
 ## Troubleshooting
 

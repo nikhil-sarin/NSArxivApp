@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -62,6 +63,95 @@ class ResearchStoreTests(unittest.TestCase):
         stored = paper_store.get_paper("2601.00002")
         self.assertEqual(stored["summary"], "Updated summary")
         self.assertEqual(stored["research_notes"]["cite_for"], "Opacity constraints")
+
+    def test_reading_library_excludes_monitoring_only_papers(self):
+        paper_store.save_paper(
+            "2601.00010",
+            {"arxiv_id": "2601.00010", "title": "Relevant transient"},
+            "Summary",
+        )
+        paper_store.save_paper(
+            "2601.00011",
+            {"arxiv_id": "2601.00011", "title": "Unrelated theory"},
+            "Summary",
+        )
+        paper_store.update_triage("2601.00011", status="irrelevant")
+
+        self.assertEqual(
+            [paper["arxiv_id"] for paper in paper_store.load_reading_papers()],
+            ["2601.00010"],
+        )
+        self.assertEqual(len(paper_store.load_all_papers()), 2)
+
+    def test_stale_inbox_papers_move_to_read_later(self):
+        papers = {
+            "recent": "2026-09-23",
+            "boundary": "2026-09-17",
+            "stale": "2026-09-16",
+            "already-read": "2026-08-01",
+        }
+        for paper_id, published in papers.items():
+            paper_store.save_paper(
+                paper_id,
+                {"arxiv_id": paper_id, "title": paper_id, "published": published},
+                "Summary",
+            )
+        paper_store.update_triage("already-read", status="read")
+
+        moved = paper_store.move_stale_inbox_to_read_later(
+            now=datetime(2026, 9, 24, 12, tzinfo=timezone.utc)
+        )
+
+        self.assertEqual(moved, 1)
+        self.assertEqual(paper_store.get_triage("recent")["status"], "inbox")
+        self.assertEqual(paper_store.get_triage("boundary")["status"], "inbox")
+        self.assertEqual(paper_store.get_triage("stale")["status"], "read_later")
+        self.assertEqual(paper_store.get_triage("already-read")["status"], "read")
+
+    def test_inbox_retention_days_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "days must be at least 1"):
+            paper_store.move_stale_inbox_to_read_later(days=0)
+
+    def test_reading_library_supports_counted_stable_pages(self):
+        for index in range(5):
+            paper_store.save_paper(
+                f"2601.1000{index}",
+                {"arxiv_id": f"2601.1000{index}", "title": f"Paper {index}"},
+                "Summary",
+            )
+        page = paper_store.load_reading_page(offset=1, limit=2)
+        self.assertEqual(paper_store.count_reading_papers(), 5)
+        self.assertEqual(len(page), 2)
+        self.assertEqual(
+            paper_store.get_papers([page[1]["arxiv_id"], page[0]["arxiv_id"]]),
+            [page[1], page[0]],
+        )
+
+    def test_query_indexes_are_installed_by_schema_migration(self):
+        db = research_db.connect()
+        try:
+            indexes = {
+                row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            }
+        finally:
+            db.close()
+        self.assertIn("idx_jobs_status_created", indexes)
+        self.assertIn("idx_citations_status_classification", indexes)
+
+    def test_versionless_id_resolves_to_stored_version_and_triage(self):
+        paper_store.save_paper(
+            "2601.00012v2",
+            {"arxiv_id": "2601.00012v2", "title": "Tracked paper"},
+            "Summary",
+        )
+        paper_store.update_triage("2601.00012v2", status="irrelevant", relevance_score=20)
+
+        stored_id = paper_store.resolve_paper_id("2601.00012")
+
+        self.assertEqual(stored_id, "2601.00012v2")
+        self.assertEqual(paper_store.get_triage(stored_id)["status"], "irrelevant")
 
     def test_notes_are_full_text_searchable(self):
         paper_store.save_paper(

@@ -24,11 +24,10 @@ from app.arxiv_client import ArxivClient
 from app.pdf_extractor import PDFExtractor
 from app.summarizer import PaperSummarizer
 from app.vector_db import PaperVectorDB
-from app.knowledge_graph import KnowledgeGraph
 from app import paper_store
 from app.paper_text import get_paper_text
 from app.report_generator import ReportUnavailable, generate_report
-from app.summary_workflow import completeness_issues, summarize_with_fallback
+from app.summary_workflow import completeness_issues, summarize_with_fallback, summarize_with_provenance
 from app.tex_extractor import fetch_html_text
 from app import researcher_profile
 from app import idea_store
@@ -42,8 +41,18 @@ from app import action_contract
 from app import evaluation
 from app import handwritten_notes
 from app import index_jobs
+from app import job_queue
+from app import summary_jobs
+from app import ui_library
+from app import ui_trends
 from app import synthesis
 from app import trends
+from app import citation_opportunities
+from app import citation_evidence
+from app import citation_contacts
+from app import citation_opportunity_store
+from app import contribution_catalogue
+from app import citation_discovery
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -69,23 +78,20 @@ def get_pdf_extractor():
     return PDFExtractor()
 
 
+def _session_vector_db() -> PaperVectorDB:
+    """Initialize the embedding index only when a workflow actually needs it."""
+    if "vdb" not in st.session_state:
+        st.session_state.vdb = get_vector_db()
+    return st.session_state.vdb
+
+
 def _reload_papers_from_store() -> None:
-    """Reload persisted papers into session state and rebuild graph state."""
-    stored = paper_store.load_all_papers()
+    """Reload persisted papers into session state."""
+    stored = paper_store.load_reading_papers()
     st.session_state.papers = stored
     st.session_state.papers_store_mtime_ns = (
         paper_store.STORE_PATH.stat().st_mtime_ns if paper_store.STORE_PATH.exists() else None
     )
-
-    kg = KnowledgeGraph()
-    for paper in stored:
-        pid = paper.get("arxiv_id", paper.get("id", ""))
-        if not pid:
-            continue
-        kg.add_paper(pid, paper)
-        kg.connect_by_category(pid, paper.get("categories", []))
-        kg.connect_by_author(pid, paper.get("authors", []))
-    st.session_state.kg = kg
 
 
 def _sync_papers_from_store() -> None:
@@ -124,13 +130,12 @@ def _latest_fetch_block(log_path: Path) -> str:
 
 
 def _recent_stored_papers(limit: int = 5) -> list[Dict]:
-    papers = paper_store.load_all_papers()
+    papers = paper_store.load_reading_papers()
     return sorted(papers, key=_published_sort_key, reverse=True)[:limit]
 
 
 def init_session_state():
     """Initialize session state variables, loading persisted papers on first run."""
-    st.session_state.vdb = get_vector_db()
     st.session_state.summarizer = get_summarizer()
     st.session_state.arxiv = get_arxiv_client()
     st.session_state.pdf_extractor = get_pdf_extractor()
@@ -156,14 +161,14 @@ def render_sidebar():
         st.session_state["sidebar_default_cats"] = DEFAULT_CATEGORIES
 
     query = st.sidebar.text_input("Search query", value=st.session_state.get("sidebar_default_query", DEFAULT_QUERY), placeholder="e.g., neutron star merger")
-    author = st.sidebar.text_input("Author", placeholder="e.g., Sarin or Nikhil Sarin")
+    author = st.sidebar.text_input("Author", placeholder="e.g., Smith or Alice Smith")
 
     st.sidebar.markdown("**Categories**")
     categories = st.sidebar.multiselect(
         "Select categories:",
         options=[
             "cs.LG", "cs.CL", "cs.CV", "cs.AI",
-            "astro-ph.HE", "astro-ph.CO", "astro-ph.GA",
+            "astro-ph.HE", "astro-ph.SR", "astro-ph.CO", "astro-ph.GA", "astro-ph.IM",
             "physics.hep-th", "gr-qc",
             "q-bio.QM", "q-fin.CP",
         ],
@@ -212,8 +217,6 @@ def render_sidebar():
         "anthropic": "claude-3-5-haiku-20241022",
         "openai": "gpt-4o-mini",
     }.get(summ_provider, summ_provider)
-    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    chat_model = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash") if has_gemini else summ_model
     # Add paper by URL or ID
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Add paper by ArXiv URL or ID**")
@@ -230,7 +233,7 @@ def render_sidebar():
             st.sidebar.warning("Please enter an ArXiv URL or ID.")
 
     st.sidebar.markdown("---")
-    preferred_chat = "gemini" if has_gemini else summ_provider
+    preferred_chat = os.getenv("PUBLIC_LLM_PROVIDER", summ_provider).strip().lower()
     public_provider = privacy.choose_provider(
         summ_provider,
         preferred_cloud_provider=preferred_chat,
@@ -246,9 +249,8 @@ def render_sidebar():
     st.sidebar.caption(f"**Notes/projects:** {privacy.routing_label(private_provider, contains_private_data=True)}")
     with st.sidebar.expander("System health", expanded=False):
         health = research_db.health_snapshot()
-        vector_count = st.session_state.vdb.collection.count()
         st.caption(f"Database schema: v{health['schema_version']}")
-        st.caption(f"Papers: {health['papers']} | vector records: {vector_count}")
+        st.caption(f"Papers: {health['papers']}")
         st.caption(f"Search documents: {health['documents']} | inbox: {health['inbox']}")
         selected_policy = st.selectbox(
             "Data routing",
@@ -259,8 +261,6 @@ def render_sidebar():
         if selected_policy != privacy.active_policy() and st.button("Apply routing policy", use_container_width=True):
             privacy.set_policy(selected_policy)
             st.rerun()
-        if vector_count != health["papers"]:
-            st.warning(f"Vector index count differs from the library by {abs(health['papers'] - vector_count)} records.")
         if health["documents"] != health["fts_documents"]:
             st.error("Full-text index requires repair.")
         if st.button("Rebuild text index", key="rebuild_text_index", use_container_width=True):
@@ -396,7 +396,7 @@ def render_paper_notes(pid: str):
                     "follow_up": follow_up,
                 },
             )
-            st.session_state.papers = paper_store.load_all_papers()
+            st.session_state.papers = paper_store.load_reading_papers()
             st.success("Notes saved.")
 
     with st.expander("Import handwritten note", expanded=False):
@@ -432,7 +432,7 @@ def render_paper_notes(pid: str):
                         text=transcription,
                         paper_id=pid,
                         locator={"arxiv_id": pid, "filename": upload.name},
-                        vector_db=st.session_state.vdb,
+                        vector_db=_session_vector_db(),
                     )
                     st.success("Transcription saved and indexed.")
                     st.rerun()
@@ -509,7 +509,7 @@ def _render_report_controls(paper: Dict, pid: str, *, key_prefix: str):
                         reports_dir=_REPORTS_DIR,
                         sources_dir=sources_dir,
                         force=True,
-                        vector_db=st.session_state.vdb,
+                        vector_db=_session_vector_db(),
                     )
                 except ReportUnavailable as exc:
                     st.error(f"Could not generate a report for {pid}: {exc}")
@@ -529,7 +529,7 @@ def _render_report_controls(paper: Dict, pid: str, *, key_prefix: str):
                         pdf_extractor=st.session_state.pdf_extractor,
                         reports_dir=_REPORTS_DIR,
                         sources_dir=sources_dir,
-                        vector_db=st.session_state.vdb,
+                        vector_db=_session_vector_db(),
                     )
                 except ReportUnavailable as exc:
                     st.error(f"Could not generate a report for {pid}: {exc}")
@@ -552,10 +552,8 @@ def _render_report_controls(paper: Dict, pid: str, *, key_prefix: str):
     )
 
 
-def _store_paper(pid: str, metadata: Dict, summary: str):
-    """Persist a paper to JSON store, vector DB, and knowledge graph."""
-    paper_store.save_paper(pid, metadata, summary)
-
+def _upsert_reading_embedding(pid: str, metadata: Dict, summary: str) -> None:
+    """Add or restore one paper in the reading-focused semantic index."""
     def _chroma_safe(v):
         """Convert a value to a ChromaDB-safe scalar."""
         if v is None or isinstance(v, (str, int, float, bool)):
@@ -576,19 +574,30 @@ def _store_paper(pid: str, metadata: Dict, summary: str):
     }
     # Use upsert pattern: delete first if exists (for regeneration), then add
     try:
-        st.session_state.vdb.collection.delete(ids=[pid])
+        _session_vector_db().collection.delete(ids=[pid])
     except Exception:
         pass
-    st.session_state.vdb.add_paper(
+    _session_vector_db().add_paper(
         paper_id=pid,
         title=metadata["title"],
         summary=summary,
         metadata=chroma_meta,
     )
 
-    st.session_state.kg.add_paper(pid, metadata)
-    st.session_state.kg.connect_by_category(pid, metadata.get("categories", []))
-    st.session_state.kg.connect_by_author(pid, metadata.get("authors", []))
+
+def _store_paper(
+    pid: str,
+    metadata: Dict,
+    summary: str,
+    paper_text: str = "",
+    *,
+    summary_provenance: Optional[Dict] = None,
+):
+    """Persist a paper, update its embedding, and queue citation discovery."""
+    paper_store.save_paper(pid, metadata, summary, summary_provenance=summary_provenance)
+    _upsert_reading_embedding(pid, metadata, summary)
+
+    citation_discovery.enqueue_paper({**metadata, "summary": summary}, paper_text)
 
 
 def _parse_arxiv_id(raw: str) -> str:
@@ -606,11 +615,28 @@ def _ingest_by_arxiv_id(raw_input: str, in_sidebar: bool = False):
     """Fetch, summarize, and store a paper given an ArXiv URL or ID."""
     arxiv_id = _parse_arxiv_id(raw_input)
 
-    if paper_store.paper_exists(arxiv_id) or paper_store.paper_exists(arxiv_id + "v1"):
-        if in_sidebar:
-            st.sidebar.info("Paper already in library.")
+    existing_id = paper_store.resolve_paper_id(arxiv_id)
+    if existing_id:
+        existing = paper_store.get_paper(existing_id) or {}
+        triage = paper_store.get_triage(existing_id) or {}
+        message_target = st.sidebar if in_sidebar else st
+        if triage.get("status") == "irrelevant":
+            with st.spinner("Promoting and summarizing paper..."):
+                summary = _regenerate_summary(existing)
+            paper_store.update_triage(existing_id, status="inbox", feedback=1)
+            if not summary:
+                _upsert_reading_embedding(
+                    existing_id,
+                    existing,
+                    str(existing.get("summary") or existing.get("abstract") or ""),
+                )
+            if not any(
+                paper.get("arxiv_id") == existing_id for paper in st.session_state.papers
+            ):
+                st.session_state.papers.append(existing)
+            message_target.success("Promoted monitoring-only paper to Inbox.")
         else:
-            st.info("Paper already in library.")
+            message_target.info("Paper is already in the reading library.")
         return
 
     context = st.sidebar if in_sidebar else nullcontext()
@@ -632,7 +658,7 @@ def _ingest_by_arxiv_id(raw_input: str, in_sidebar: bool = False):
             text = _fetch_text(result, pid, st.session_state.arxiv, st.session_state.pdf_extractor)
 
         with st.spinner("Summarizing..."):
-            summary = summarize_with_fallback(
+            summary, provenance = summarize_with_provenance(
                 st.session_state.summarizer,
                 text,
                 metadata.get("abstract", ""),
@@ -644,7 +670,8 @@ def _ingest_by_arxiv_id(raw_input: str, in_sidebar: bool = False):
                 return
 
         metadata["summary"] = summary
-        _store_paper(pid, metadata, summary)
+        metadata["summary_provenance"] = provenance
+        _store_paper(pid, metadata, summary, text, summary_provenance=provenance)
         st.session_state.papers.append(metadata)
         st.success(f"Added: {metadata['title'][:60]}...")
 
@@ -725,7 +752,7 @@ def render_search_results(query: str, author: str, categories: List[str], max_re
         for i, (_, metadata) in enumerate(new_results, start=1):
             pid = metadata["arxiv_id"]
             progress.progress(i / len(new_results), text=f"Summarizing {i}/{len(new_results)}: {metadata['title'][:50]}...")
-            summary = summarize_with_fallback(
+            summary, provenance = summarize_with_provenance(
                 st.session_state.summarizer,
                 texts.get(pid, ""),
                 metadata.get("abstract", ""),
@@ -736,7 +763,14 @@ def render_search_results(query: str, author: str, categories: List[str], max_re
                 st.warning(f"Skipping {pid}: no readable full text or abstract was available.")
                 continue
             metadata["summary"] = summary
-            _store_paper(pid, metadata, summary)
+            metadata["summary_provenance"] = provenance
+            _store_paper(
+                pid,
+                metadata,
+                summary,
+                texts.get(pid, ""),
+                summary_provenance=provenance,
+            )
             if pid not in existing_ids:
                 st.session_state.papers.append(metadata)
                 existing_ids.add(pid)
@@ -753,7 +787,7 @@ def render_search_results(query: str, author: str, categories: List[str], max_re
 def render_multi_paper_chat():
     """Chat across multiple selected papers simultaneously."""
     st.markdown("### Multi-paper chat")
-    all_papers = paper_store.load_all_papers()
+    all_papers = paper_store.load_reading_papers()
     if not all_papers:
         st.info("No papers in your library yet.")
         return
@@ -780,11 +814,17 @@ def render_multi_paper_chat():
     if st.session_state.get(f"{context_key}_ids") != context_ids:
         with st.spinner("Loading paper texts..."):
             parts = []
-            has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+            public_provider = privacy.choose_provider(
+                st.session_state.summarizer._active_provider(),
+                preferred_cloud_provider=os.getenv(
+                    "PUBLIC_LLM_PROVIDER", st.session_state.summarizer._active_provider()
+                ),
+                contains_private_data=False,
+            )
             for p in selected_papers:
                 pid = p.get("arxiv_id", "")
                 text = _get_paper_text(pid, p)
-                parts.append(_paper_source_context(pid, p, text, max_chunks=None if has_gemini else 4))
+                parts.append(_paper_source_context(pid, p, text, max_chunks=None if public_provider == "gemini" else 4))
             st.session_state[context_key] = "\n\n".join(parts)
             st.session_state[f"{context_key}_ids"] = context_ids
 
@@ -830,7 +870,7 @@ def render_vector_search():
     )
     if semantic_query:
         with st.spinner("Searching..."):
-            results = retrieval.hybrid_search(semantic_query, vector_db=st.session_state.vdb, limit=15)
+            results = retrieval.hybrid_search(semantic_query, vector_db=_session_vector_db(), limit=15)
         if results:
             st.markdown(f"### Found {len(results)} attributable sources")
             for result in results:
@@ -843,7 +883,7 @@ def render_vector_search():
                     if url:
                         st.link_button("Open source", url)
         else:
-            st.info("No indexed sources matched. Index full papers from Research Ops if needed.")
+            st.info("No indexed sources matched. Check the search index in Library Health.")
 
     st.markdown("---")
     render_multi_paper_chat()
@@ -858,16 +898,20 @@ def _rescore_inbox() -> int:
     all_triage = paper_store.load_triage(status=None, limit=5000)
     positive = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == 1]
     negative = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == -1]
-    interest_text = relevance.build_interest_text(researcher_profile.load(), _all_saved_ideas())
-    scored = relevance.score_papers(
+    scored = relevance.score_tracking_papers(
         inbox,
-        interest_text=interest_text,
+        profile=researcher_profile.load(),
+        ideas=_all_saved_ideas(),
+        contributions=contribution_catalogue.enabled_contributions(),
         positive_papers=positive,
         negative_papers=negative,
+        encode=_session_vector_db().embedder.encode,
     )
+    threshold = float(os.getenv("TRACKING_RELEVANCE_THRESHOLD", "50"))
     for paper in scored:
         paper_store.update_triage(
             paper.get("arxiv_id", ""),
+            status="inbox" if paper["relevance_score"] >= threshold else "irrelevant",
             relevance_score=paper["relevance_score"],
             relevance_reason=paper["relevance_reason"],
         )
@@ -876,6 +920,9 @@ def _rescore_inbox() -> int:
 
 def render_inbox():
     """Render the daily paper triage and relevance-feedback workflow."""
+    moved = paper_store.move_stale_inbox_to_read_later()
+    if moved:
+        st.toast(f"Moved {moved} papers older than seven days to Read later.")
     st.header("Research Inbox")
     status_labels = {
         "inbox": "Inbox",
@@ -883,7 +930,7 @@ def render_inbox():
         "skimmed": "Skimmed",
         "read": "Read",
         "saved": "Library",
-        "irrelevant": "Irrelevant",
+        "irrelevant": "Monitor only",
     }
     ctrl1, ctrl2 = st.columns([2, 1])
     selected_label = ctrl1.selectbox("View", list(status_labels.values()), key="inbox_status")
@@ -892,12 +939,48 @@ def render_inbox():
         count = _rescore_inbox()
         st.success(f"Scored {count} inbox papers against your profile, projects, and feedback.")
 
-    papers = paper_store.load_triage(status=selected_status, limit=100)
+    monitor_query = ""
+    monitor_sort = "Closest to threshold"
+    if selected_status == "irrelevant":
+        monitor_col1, monitor_col2 = st.columns([2, 1])
+        monitor_query = monitor_col1.text_input(
+            "Find monitored paper",
+            placeholder="ArXiv ID or title",
+            key="monitor_paper_query",
+        ).strip().casefold()
+        monitor_sort = monitor_col2.selectbox(
+            "Order",
+            ["Closest to threshold", "Lowest score"],
+            key="monitor_paper_sort",
+        )
+
+    papers = paper_store.load_triage(
+        status=selected_status,
+        limit=5000 if selected_status == "irrelevant" else 100,
+    )
+    if monitor_query:
+        papers = [
+            paper for paper in papers
+            if monitor_query in str(paper.get("arxiv_id", "")).casefold()
+            or monitor_query in str(paper.get("title", "")).casefold()
+        ]
+    if selected_status == "irrelevant" and monitor_sort == "Lowest score":
+        papers.sort(
+            key=lambda paper: (
+                paper.get("triage", {}).get("relevance_score")
+                if paper.get("triage", {}).get("relevance_score") is not None
+                else -1
+            )
+        )
+    papers = papers[:100]
     if not papers:
         st.info("No papers in this view.")
         return
 
-    st.caption(f"{len(papers)} papers shown. New scheduled papers arrive in Inbox.")
+    if selected_status == "irrelevant":
+        st.caption(f"{len(papers)} monitoring-only papers shown. Promote any missed paper to train future ranking.")
+    else:
+        st.caption(f"{len(papers)} papers shown.")
     for paper in papers:
         pid = paper.get("arxiv_id", "")
         triage = paper.get("triage", {})
@@ -908,6 +991,18 @@ def render_inbox():
             if triage.get("relevance_reason"):
                 st.caption(triage["relevance_reason"])
             st.write(paper.get("summary") or paper.get("abstract") or "No summary available.")
+            if selected_status == "irrelevant" and st.button(
+                "Promote to Inbox",
+                key=f"promote_{pid}",
+                type="primary",
+            ):
+                paper_store.update_triage(pid, status="inbox", feedback=1)
+                _upsert_reading_embedding(
+                    pid,
+                    paper,
+                    str(paper.get("summary") or paper.get("abstract") or ""),
+                )
+                st.rerun()
             action_cols = st.columns(6)
             actions = [
                 ("Read later", "read_later", None),
@@ -925,7 +1020,7 @@ def render_inbox():
 
 def render_knowledge_graph():
     st.header("Knowledge Graph")
-    papers = paper_store.load_all_papers()
+    papers = paper_store.load_reading_papers()
     if len(papers) < 2:
         st.info("Add more papers to see connections.")
         return
@@ -989,10 +1084,10 @@ def render_knowledge_graph():
     if "semantic similarity" in edge_types:
         with st.spinner("Adding semantic similarity edges..."):
             for pid in ids:
-                vec = st.session_state.vdb.get_embedding(pid)
+                vec = _session_vector_db().get_embedding(pid)
                 if vec is None:
                     continue
-                for result in st.session_state.vdb.search_by_vector(vec, top_k=5, exclude_id=pid):
+                for result in _session_vector_db().search_by_vector(vec, top_k=5, exclude_id=pid):
                     other = result["id"]
                     if other not in paper_by_id:
                         continue
@@ -1134,11 +1229,11 @@ def _chat_with_paper(pid: str, paper: Dict, user_message: str) -> str:
             paper,
             arxiv_client=st.session_state.arxiv,
             pdf_extractor=st.session_state.pdf_extractor,
-            vector_db=st.session_state.vdb,
+            vector_db=_session_vector_db(),
         )
         evidence = retrieval.hybrid_search(
             user_message,
-            vector_db=st.session_state.vdb,
+            vector_db=_session_vector_db(),
             paper_ids=[pid],
             limit=8,
         )
@@ -1190,10 +1285,11 @@ def render_paper_chat(pid: str, paper: Dict):
     history = st.session_state.get(history_key, [])
 
     source = st.session_state.get(f"chat_text_source_{pid}", "")
-    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
     provider = privacy.choose_provider(
         st.session_state.summarizer._active_provider(),
-        preferred_cloud_provider="gemini" if has_gemini else None,
+        preferred_cloud_provider=os.getenv(
+            "PUBLIC_LLM_PROVIDER", st.session_state.summarizer._active_provider()
+        ),
         contains_private_data=bool(_notes_lines(paper)),
     )
     st.markdown("**Chat with this paper**")
@@ -1238,7 +1334,7 @@ def _regenerate_summary(paper: Dict, detailed: bool = False):
         else:
             st.warning(f"Could not fetch full paper text for {pid}: {exc}")
 
-    summary = summarize_with_fallback(
+    summary, provenance = summarize_with_provenance(
         st.session_state.summarizer,
         text,
         paper.get("abstract", ""),
@@ -1248,7 +1344,8 @@ def _regenerate_summary(paper: Dict, detailed: bool = False):
     if not summary.strip():
         st.error(f"Could not generate a summary for {pid}. No readable full text or abstract was available.")
         return None
-    _store_paper(pid, paper, summary)
+    paper["summary_provenance"] = provenance
+    _store_paper(pid, paper, summary, summary_provenance=provenance)
 
     # Update session state papers list
     for p in st.session_state.papers:
@@ -1284,41 +1381,28 @@ def render_papers_list():
     btn_col1, btn_col2, btn_col3, btn_col4, mode_col = st.columns([1, 1, 1, 1, 2])
     detailed_all = mode_col.checkbox("Detailed mode", key="regen_detailed_all")
     if btn_col1.button("Regenerate all"):
-        progress = st.progress(0, text="Regenerating summaries...")
-        all_papers = paper_store.load_all_papers()
-        for i, p in enumerate(all_papers):
-            progress.progress((i + 1) / len(all_papers), text=f"Summarizing {i+1}/{len(all_papers)}: {p.get('title','')[:50]}...")
-            _regenerate_summary(p, detailed=detailed_all)
-        progress.empty()
-        st.session_state.papers = paper_store.load_all_papers()
-        st.success("All summaries regenerated.")
-        st.rerun()
+        job_id = summary_jobs.enqueue(None, detailed=detailed_all)
+        st.success(f"Queued summary job {job_id[:8]}. Progress is shown under Library Health.")
     if btn_col2.button("Fill missing"):
-        missing = [p for p in paper_store.load_all_papers() if not p.get("summary", "").strip()]
+        missing = [p for p in paper_store.load_reading_papers() if not p.get("summary", "").strip()]
         if not missing:
             st.info("No missing summaries.")
         else:
-            progress = st.progress(0, text="Filling missing summaries...")
-            for i, p in enumerate(missing):
-                progress.progress((i + 1) / len(missing), text=f"Summarizing {i+1}/{len(missing)}: {p.get('title','')[:50]}...")
-                _regenerate_summary(p, detailed=detailed_all)
-            progress.empty()
-            st.session_state.papers = paper_store.load_all_papers()
-            st.success(f"Filled {len(missing)} missing summaries.")
-            st.rerun()
+            job_id = summary_jobs.enqueue(
+                [str(p.get("arxiv_id")) for p in missing],
+                detailed=detailed_all,
+            )
+            st.success(f"Queued {len(missing)} missing summaries as job {job_id[:8]}.")
     if btn_col3.button("Refresh"):
-        st.session_state.papers = paper_store.load_all_papers()
+        st.session_state.papers = paper_store.load_reading_papers()
         st.rerun()
     if btn_col4.button("Repair incomplete"):
-        incomplete = [p for p in paper_store.load_all_papers() if completeness_issues(p.get("summary", ""))]
-        progress = st.progress(0, text="Repairing incomplete summaries...")
-        for i, paper in enumerate(incomplete, start=1):
-            progress.progress(i / max(len(incomplete), 1), text=f"Repairing {i}/{len(incomplete)}")
-            _regenerate_summary(paper, detailed=True)
-        progress.empty()
-        st.session_state.papers = paper_store.load_all_papers()
-        st.success(f"Rebuilt {len(incomplete)} summaries from full text.")
-        st.rerun()
+        incomplete_ids = summary_jobs.incomplete_paper_ids()
+        if incomplete_ids:
+            job_id = summary_jobs.enqueue(incomplete_ids, detailed=True)
+            st.success(f"Queued {len(incomplete_ids)} repairs as job {job_id[:8]}.")
+        else:
+            st.info("No incomplete summaries.")
 
     st.markdown("---")
 
@@ -1366,14 +1450,14 @@ def render_papers_list():
         st.info("No papers match the current filters.")
         return
 
-    st.caption(f"Showing {min(len(df), 50)} of {len(df)} papers")
+    page = ui_library.paginated_rows(df)
 
     # Per-paper cards with regenerate button
     # Keep a live summary cache in session state so regeneration shows immediately
     if "live_summaries" not in st.session_state:
         st.session_state.live_summaries = {}
 
-    for _, row in df.head(50).iterrows():
+    for _, row in page.iterrows():
         paper = _sanitize_paper_dict(row.to_dict())
         pid = paper.get("arxiv_id", "")
         # Use live summary if we just regenerated it this session
@@ -1385,6 +1469,7 @@ def render_papers_list():
                 st.caption(f"Published: {paper.get('published', 'N/A')}")
                 st.markdown("**Summary**")
                 st.write(displayed_summary)
+                ui_library.render_summary_provenance(paper)
                 issues = completeness_issues(displayed_summary)
                 if issues:
                     st.warning("Summary quality check: " + ", ".join(issues) + ". Regenerate in Detailed mode.")
@@ -1397,13 +1482,8 @@ def render_papers_list():
                     st.markdown(f"[View on ArXiv](https://arxiv.org/abs/{pid})")
                 detailed = st.checkbox("Detailed", key=f"det_{pid}")
                 if st.button("Regenerate summary", key=f"regen_{pid}"):
-                    with st.spinner("Summarizing..."):
-                        new_summary = _regenerate_summary(paper, detailed=detailed)
-                    if new_summary:
-                        st.session_state.live_summaries[pid] = new_summary
-                        st.session_state.papers = paper_store.load_all_papers()
-                        st.success("Done. Summary updated.")
-                        st.rerun()
+                    job_id = summary_jobs.enqueue([pid], detailed=detailed)
+                    st.success(f"Queued as job {job_id[:8]}.")
                 show_chat_key = f"show_chat_{pid}"
                 if st.button("Chat with paper", key=f"chat_btn_{pid}"):
                     st.session_state[show_chat_key] = not st.session_state.get(show_chat_key, False)
@@ -1419,7 +1499,7 @@ def render_papers_list():
                     dcol1, dcol2 = st.columns(2)
                     if dcol1.button("Yes, delete", key=f"del_confirm_{pid}", type="primary"):
                         paper_store.delete_paper(pid)
-                        st.session_state.vdb.delete_paper(pid)
+                        _session_vector_db().delete_paper(pid)
                         st.session_state.papers = [
                             p for p in st.session_state.papers
                             if p.get("arxiv_id") != pid
@@ -1431,9 +1511,9 @@ def render_papers_list():
                 if pid:
                     _render_report_controls(paper, pid, key_prefix="library")
             if st.session_state.get(f"show_mlt_{pid}", False):
-                vec = st.session_state.vdb.get_embedding(pid)
+                vec = _session_vector_db().get_embedding(pid)
                 if vec is not None:
-                    similar = st.session_state.vdb.search_by_vector(vec, top_k=5, exclude_id=pid)
+                    similar = _session_vector_db().search_by_vector(vec, top_k=5, exclude_id=pid)
                     if similar:
                         st.markdown("**Similar papers in your library:**")
                         for s in similar:
@@ -1582,10 +1662,20 @@ def render_schedule():
             sched_query = st.text_input("Search query for scheduled job", placeholder="neutron star kilonova")
         sched_cats = st.multiselect(
             "Categories",
-            ["cs.LG", "cs.CL", "cs.CV", "cs.AI", "astro-ph.HE", "astro-ph.CO", "astro-ph.GA", "physics.hep-th", "gr-qc"],
-            default=st.session_state.get("sidebar_default_cats", ["astro-ph.HE"]),
+            [
+                "cs.LG", "cs.CL", "cs.CV", "cs.AI", "astro-ph.HE", "astro-ph.SR",
+                "astro-ph.CO", "astro-ph.GA", "astro-ph.IM", "physics.hep-th", "gr-qc",
+            ],
+            default=st.session_state.get("sidebar_default_cats", ["astro-ph.HE", "astro-ph.SR", "gr-qc"]),
         )
-        sched_max = st.slider("Max results per run", 5, 50, 20)
+        sched_max = st.number_input(
+            "Max results per run",
+            min_value=0,
+            max_value=500,
+            value=0 if mode == "new-submissions" else 20,
+            step=10,
+            help="Use 0 to ingest every matching announcement. A positive value keeps only the first N papers.",
+        )
         sched_days_back = st.slider(
             "Days back",
             0,
@@ -1641,7 +1731,7 @@ def render_schedule():
                 with st.spinner("Running fetch job..."):
                     ok, output = _run_fetch_command(fetch_cmd, log_path)
                 if ok:
-                    st.session_state.papers = paper_store.load_all_papers()
+                    st.session_state.papers = paper_store.load_reading_papers()
                     st.success("Fetch completed and library reloaded.")
                 else:
                     st.error("Fetch failed.")
@@ -1738,7 +1828,7 @@ def _retrieved_library_context(query: str, *, paper_ids: list[str] | None = None
     """Retrieve bounded, attributable context rather than serializing the full library."""
     evidence = retrieval.hybrid_search(
         query or "main contribution methods results limitations",
-        vector_db=st.session_state.vdb,
+        vector_db=_session_vector_db(),
         paper_ids=paper_ids,
         limit=limit,
     )
@@ -1747,7 +1837,7 @@ def _retrieved_library_context(query: str, *, paper_ids: list[str] | None = None
 
 def render_lit_review_builder():
     st.header("Literature Review Builder")
-    papers = paper_store.load_all_papers()
+    papers = paper_store.load_reading_papers()
     if not papers:
         st.info("Your library is empty. Search for papers first.")
         return
@@ -1787,7 +1877,7 @@ def render_lit_review_builder():
     selected_ids = [paper.get("arxiv_id", "") for paper in selected]
     matrix = synthesis.claim_matrix(
         evidence_query,
-        vector_db=st.session_state.vdb,
+        vector_db=_session_vector_db(),
         paper_ids=selected_ids,
         limit=24,
     )
@@ -1862,14 +1952,13 @@ def render_assistant():
         "Chat with your entire library, generate a research briefing, or find gaps and open questions."
     )
 
-    papers = paper_store.load_all_papers()
+    papers = paper_store.load_reading_papers()
     if not papers:
         st.info("Your library is empty. Search for papers first.")
         return
 
     n = len(papers)
-    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    model_name = os.getenv("CHAT_LLM_MODEL", "gemini-2.0-flash") if has_gemini else st.session_state.summarizer._active_model()
+    model_name = st.session_state.summarizer._active_model()
     st.caption(f"{n} papers in library — model: {model_name}")
 
     mode = st.radio(
@@ -2043,7 +2132,7 @@ def render_assistant():
         specialities = col2.text_input(
             "Your specialities / tools",
             value=profile_tools,
-            placeholder="e.g., Bayesian inference, light curve modelling, redback, MCMC",
+            placeholder="e.g., Bayesian inference, light curve modelling, MCMC",
             key="proj_specialities",
         )
         n_ideas = st.slider("Number of project ideas", 2, 6, 3, key="proj_n_ideas")
@@ -2155,7 +2244,7 @@ def render_profile():
     profile = researcher_profile.load()
 
     # Auto-generate from library
-    papers = paper_store.load_all_papers()
+    papers = paper_store.load_reading_papers()
     gen_col, _ = st.columns([1, 3])
     if gen_col.button("Auto-generate from library", type="primary", disabled=len(papers) == 0):
         if not papers:
@@ -2211,7 +2300,7 @@ def render_profile():
         profile["methods_and_tools"] = st.text_area(
             "Methods & tools",
             value=profile.get("methods_and_tools", ""),
-            placeholder="e.g. Bayesian inference, MCMC, redback, light curve modelling, Python",
+            placeholder="e.g. Bayesian inference, MCMC, light curve modelling, Python",
             height=80,
         )
         profile["bio"] = st.text_area(
@@ -2219,6 +2308,21 @@ def render_profile():
             value=profile.get("bio", ""),
             placeholder="A short description of your research focus...",
             height=100,
+        )
+        profile["tracking_preferences"] = st.text_area(
+            "Paper tracking priorities",
+            value=profile.get("tracking_preferences", ""),
+            placeholder=(
+                "One topic per line, for example: transient light-curve inference; "
+                "eruptive pre-supernova mass loss"
+            ),
+            height=100,
+        )
+        profile["tracking_exclusions"] = st.text_area(
+            "Paper tracking exclusions",
+            value=profile.get("tracking_exclusions", ""),
+            placeholder="Exact phrases to keep out of the reading inbox, one per line",
+            height=80,
         )
         if st.form_submit_button("Save profile", type="primary"):
             researcher_profile.save(profile)
@@ -2246,7 +2350,7 @@ def _idea_workspace(idea_type: str, idea: Dict):
         f"Description: {idea['description']}\n"
     )
 
-    all_papers = paper_store.load_all_papers()
+    all_papers = paper_store.load_reading_papers()
     paper_by_id = {p.get("arxiv_id", p.get("id", "")): p for p in all_papers if p.get("arxiv_id", p.get("id", ""))}
     label_by_id = {pid: _paper_label(paper) for pid, paper in paper_by_id.items()}
     paper_by_label = {label: paper_by_id[pid] for pid, label in label_by_id.items()}
@@ -2524,7 +2628,7 @@ def _render_ideas_tab(idea_type: str):
         specialities = col2.text_input(
             "Your specialities / tools",
             value=profile_tools,
-            placeholder="e.g., Bayesian inference, redback, MCMC",
+                placeholder="e.g., Bayesian inference, MCMC",
             key=f"{idea_type}_gen_spec",
         )
         n_ideas = st.slider("Number of ideas to generate", 1, 5, 3, key=f"{idea_type}_n_ideas")
@@ -2788,12 +2892,12 @@ def render_projects():
                     title=meeting_title or f"Meeting for {project.get('title', project_id)}",
                     text=meeting_text,
                     locator={"project_id": project_id, "created_at": datetime.now(timezone.utc).isoformat()},
-                    vector_db=st.session_state.vdb,
+                    vector_db=_session_vector_db(),
                 )
                 st.success("Meeting notes saved and indexed.")
 
     with papers_tab:
-        all_papers = paper_store.load_all_papers()
+        all_papers = paper_store.load_reading_papers()
         paper_options = {_paper_label(paper): paper for paper in all_papers}
         current_ids = set(project_store.linked_paper_ids(project_id))
         defaults = [label for label, paper in paper_options.items() if paper.get("arxiv_id") in current_ids]
@@ -2827,7 +2931,7 @@ def render_projects():
         if st.button("Generate weekly project briefing", type="primary", key=f"project_briefing_{project_id}"):
             snapshots = project_store.latest_snapshots(project_id, limit=6)
             linked_ids = project_store.linked_paper_ids(project_id)
-            linked = [paper for paper in paper_store.load_all_papers() if paper.get("arxiv_id") in linked_ids]
+            linked = [paper for paper in paper_store.load_reading_papers() if paper.get("arxiv_id") in linked_ids]
             system = (
                 "You are preparing a private weekly research-project briefing. Distinguish repository/Notion changes "
                 "from literature evidence and do not invent progress.\n\n"
@@ -2897,41 +3001,51 @@ def render_projects():
 
 def render_research_ops():
     """Render corpus trends, background indexing, and measured model routes."""
-    st.header("Research Ops")
-    trends_tab, indexing_tab, eval_tab = st.tabs(["Emerging themes", "Indexing", "Model evaluation"])
+    st.header("Library Health")
+    trends_tab, indexing_tab, eval_tab = st.tabs(["Recent clusters", "Search index", "Model checks"])
 
     with trends_tab:
-        window = st.slider("Recent window (days)", 30, 365, 90, 30)
-        rows = trends.emerging_themes(paper_store.load_all_papers(), recent_days=window)
-        if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        else:
-            st.info("Not enough papers occur in both comparison windows yet.")
+        ui_trends.render(_session_vector_db())
 
     with indexing_tab:
         health = research_db.health_snapshot()
+        vector_count = _session_vector_db().collection.count()
         cols = st.columns(4)
         cols[0].metric("Papers", health["papers"])
-        cols[1].metric("Documents", health["documents"])
+        cols[1].metric("Vector records", vector_count)
         cols[2].metric("Queued/running", health["pending_jobs"])
         cols[3].metric("Failed", health["failed_jobs"])
-        start_col, repair_col = st.columns(2)
+        st.caption(f"Search documents: {health['documents']}")
+        if vector_count != health["papers"]:
+            st.warning(
+                f"Vector index count differs from the library by "
+                f"{abs(health['papers'] - vector_count)} records."
+            )
+        start_col, repair_col, retry_col, cancel_col = st.columns(4)
         if start_col.button("Index missing full text", type="primary", use_container_width=True):
             job_id = index_jobs.enqueue_library_index(
                 arxiv_client=st.session_state.arxiv,
                 pdf_extractor=st.session_state.pdf_extractor,
-                vector_db=st.session_state.vdb,
+                vector_db=_session_vector_db(),
             )
             st.success(f"Queued indexing job {job_id[:8]}.")
-        if repair_col.button("Repair interrupted jobs", use_container_width=True):
+        if repair_col.button("Resume interrupted jobs", use_container_width=True):
             repaired = index_jobs.repair_stale_jobs()
-            st.success(f"Marked {repaired} interrupted jobs for rerun.")
+            st.success(f"Requeued {repaired} interrupted jobs.")
+        if retry_col.button("Retry failed", use_container_width=True):
+            retried = job_queue.retry_failed()
+            st.success(f"Requeued {retried} failed jobs.")
+        if cancel_col.button("Cancel queued", use_container_width=True):
+            cancelled = job_queue.cancel_queued()
+            st.success(f"Cancelled {cancelled} queued jobs.")
         jobs = index_jobs.list_jobs()
         if jobs:
             st.dataframe(pd.DataFrame([{
                 "job": job["job_id"][:8], "status": job["status"],
+                "type": job["kind"],
                 "papers": job.get("result", {}).get("papers_examined", ""),
-                "chunks": job.get("result", {}).get("chunks_written", ""),
+                "completed": job.get("result", {}).get("papers_completed", job.get("result", {}).get("papers_indexed", "")),
+                "progress": job.get("result", {}).get("current", ""),
                 "error": job.get("error", ""), "updated": job["updated_at"][:19],
             } for job in jobs]), use_container_width=True, hide_index=True)
 
@@ -2968,46 +3082,587 @@ def render_research_ops():
             } for run in runs]), use_container_width=True, hide_index=True)
 
 
+def render_citation_opportunities():
+    """Render the automatically populated evidence-review and export queue."""
+    st.header("Citation Opportunities")
+    orchestrator_endpoint = os.getenv("LOCAL_ORCHESTRATOR_URL", "").strip()
+    orchestrator_ui = os.getenv("LOCAL_ORCHESTRATOR_UI_URL", "").strip()
+    if orchestrator_endpoint:
+        orchestrator_ui = orchestrator_ui or orchestrator_endpoint.split("/v1/", 1)[0]
+        st.info(
+            "Review the scientific match here. If it is worth contacting the authors, "
+            "send it to Email drafts; LocalOrchestrator will prepare editable text and never send it."
+        )
+        st.link_button("Open Email drafts →", orchestrator_ui)
+    else:
+        st.info(
+            "Review, reject, and edit citation opportunities here. Email-draft handoff "
+            "is optional and is not configured for this installation."
+        )
+    try:
+        catalogue = contribution_catalogue.load()
+    except contribution_catalogue.CatalogueError as exc:
+        st.error(str(exc))
+        return
+    contributions = [item for item in catalogue["contributions"] if item.get("enabled", True)]
+    papers = paper_store.load_all_papers()
+    if not papers or not contributions:
+        st.info("A stored paper and at least one enabled catalogue contribution are required.")
+        return
+
+    discovery_jobs = [job for job in index_jobs.list_jobs() if job["kind"] == "citation_discovery"]
+    pending_count = sum(job["status"] in {"queued", "running"} for job in discovery_jobs)
+    failed_count = sum(job["status"] == "failed" for job in discovery_jobs)
+    all_opportunities = citation_opportunity_store.list_actionable()
+    reviewable = [
+        item for item in all_opportunities
+        if item["classification"] in {"strong_citation_opportunity", "potentially_useful"}
+        and item["status"] in {"proposed", "needs_review"}
+    ]
+    strong_count = sum(item["classification"] == "strong_citation_opportunity" for item in reviewable)
+    potential_count = sum(item["classification"] == "potentially_useful" for item in reviewable)
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("Strong", strong_count)
+    metric_cols[1].metric("Potential", potential_count)
+    metric_cols[2].metric("Checks running", pending_count)
+    metric_cols[3].metric("Failed checks", failed_count)
+    metric_cols[4].metric("Your works", len(contributions))
+
+    by_id = {item["id"]: item for item in catalogue["contributions"]}
+    papers_by_id = {paper.get("arxiv_id", ""): paper for paper in papers}
+
+    with st.expander("Create citation opportunity manually", expanded=False):
+        contribution_options = {
+            item.get("name", item["id"]): item for item in contributions
+        }
+        with st.form("manual_citation_opportunity"):
+            manual_arxiv = st.text_input(
+                "ArXiv ID or URL",
+                placeholder="2609.09520",
+            )
+            manual_contribution_label = st.selectbox(
+                "Your relevant work",
+                list(contribution_options),
+            )
+            manual_strength = st.selectbox(
+                "Match strength",
+                ["Potentially useful", "Strong citation opportunity"],
+            )
+            manual_confidence = st.slider(
+                "Confidence",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.8,
+                step=0.05,
+            )
+            manual_rationale = st.text_area(
+                "Scientific connection",
+                placeholder="Explain specifically how your work is relevant to this paper.",
+            )
+            manual_counterargument = st.text_area(
+                "Strongest counterargument",
+                value="The authors may have made a reasonable independent methodological choice.",
+            )
+            manual_locator = st.text_input(
+                "Evidence location",
+                placeholder="Methods, section 3, or page 7",
+            )
+            manual_quote = st.text_area(
+                "Evidence quote from the paper",
+                placeholder="Paste the exact supporting passage from the paper.",
+            )
+            create_manual_submitted = st.form_submit_button(
+                "Create opportunity",
+                type="primary",
+            )
+        if create_manual_submitted:
+            try:
+                canonical_id = citation_opportunities.arxiv_id_from_input(manual_arxiv)
+                if not canonical_id:
+                    raise ValueError("enter a valid modern arXiv ID or URL")
+                stored_id = paper_store.resolve_paper_id(canonical_id)
+                if not stored_id:
+                    raise ValueError("add the paper using the left sidebar first")
+                source_paper = paper_store.get_paper(stored_id) or {}
+                contribution = contribution_options[manual_contribution_label]
+                ineligible_reason = (
+                    citation_evidence.citation_opportunity_ineligibility_reason(
+                        source_paper
+                    )
+                )
+                if ineligible_reason == "accepted_or_published":
+                    raise ValueError("the paper is already accepted or published")
+                if ineligible_reason == "opportunity_window_expired":
+                    raise ValueError(
+                        "the paper is outside the configured citation-opportunity window"
+                    )
+                if not citation_evidence.contribution_predates_paper(stored_id, contribution):
+                    raise ValueError("the selected work was not public before this paper")
+                with st.spinner("Validating evidence against the paper..."):
+                    paper_text = _get_paper_text(stored_id, source_paper)
+                evidence_source = "\n\n".join(
+                    part
+                    for part in (paper_text, str(source_paper.get("abstract", "")))
+                    if part.strip()
+                )
+                evidence_packet = citation_evidence.build_evidence_packet(
+                    stored_id,
+                    paper_text,
+                    contribution,
+                    owner_name_variants=catalogue.get(
+                        "owner_name_variants", [catalogue["owner"]]
+                    ),
+                    corpus_chunks=research_db.documents_for_owner(
+                        "paper_content", stored_id
+                    ),
+                )
+                citation_opportunities.create_manual(
+                    paper_id=stored_id,
+                    contribution=contribution,
+                    catalogue_version=catalogue["schema_version"],
+                    classification=(
+                        "strong_citation_opportunity"
+                        if manual_strength == "Strong citation opportunity"
+                        else "potentially_useful"
+                    ),
+                    confidence=manual_confidence,
+                    rationale=manual_rationale,
+                    counterargument=manual_counterargument,
+                    evidence_quote=manual_quote,
+                    evidence_locator=manual_locator,
+                    paper_text=evidence_source,
+                    reference_check=evidence_packet["reference_check"],
+                )
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"Could not create opportunity: {exc}")
+            else:
+                st.success("Manual citation opportunity created.")
+                st.rerun()
+
+    paper_lookup = st.text_input(
+        "Find a paper",
+        placeholder="ArXiv ID, URL, or title",
+        key="citation_paper_lookup",
+    ).strip()
+
+    with st.expander("Recheck a paper", expanded=False):
+        paper_options = {_paper_label(paper): paper for paper in sorted(papers, key=_published_sort_key, reverse=True)}
+        paper_label = st.selectbox("Paper", list(paper_options), key="citation_paper")
+        paper = paper_options[paper_label]
+        if st.button("Queue recheck", key="analyse_citation"):
+            try:
+                paper_id = paper.get("arxiv_id", "")
+                full_text = _get_paper_text(paper_id, paper)
+                job_id = citation_discovery.enqueue_paper(paper, full_text, force=True)
+            except Exception as exc:
+                st.error(f"Could not queue recheck: {exc}")
+            else:
+                st.success(f"Queued {job_id[:8]}.")
+
+    completed = [
+        item for item in all_opportunities
+        if item not in reviewable and item["status"] in {"confirmed", "exported"}
+    ]
+    dismissed = citation_opportunity_store.list_opportunities(
+        status="dismissed", limit=500
+    )
+    visible_opportunities = [*all_opportunities, *dismissed]
+    if paper_lookup:
+        lookup_id = citation_opportunities.arxiv_id_from_input(paper_lookup)
+        if lookup_id:
+            displayed = [
+                item for item in visible_opportunities
+                if item["paper_id"] == lookup_id
+                or item["paper_id"].startswith(f"{lookup_id}v")
+            ]
+        else:
+            query = paper_lookup.casefold()
+            displayed = [
+                item for item in visible_opportunities
+                if query in item["paper_id"].casefold()
+                or query in str(
+                    papers_by_id.get(item["paper_id"], {}).get("title", "")
+                ).casefold()
+            ]
+        empty_message = f"No citation opportunities found for {paper_lookup}."
+    else:
+        view = st.radio(
+            "View",
+            ["Strong matches", "All reviewable", "Sent to Email drafts", "Dismissed"],
+            horizontal=True,
+            key="citation_opportunity_view",
+        )
+        if view == "Strong matches":
+            displayed = [
+                item for item in reviewable
+                if item["classification"] == "strong_citation_opportunity"
+            ]
+        elif view == "All reviewable":
+            displayed = reviewable
+        elif view == "Sent to Email drafts":
+            displayed = completed
+        else:
+            displayed = dismissed
+        empty_message = f"No opportunities in {view.lower()}."
+
+    if displayed:
+        displayed_paper_ids = {item["paper_id"] for item in displayed}
+        displayed = [
+            item for item in visible_opportunities
+            if item["paper_id"] in displayed_paper_ids
+            and item["classification"] in {
+                "strong_citation_opportunity", "potentially_useful"
+            }
+        ]
+        paper_groups = citation_opportunities.group_by_paper(displayed)
+        summary_rows = []
+        for group in paper_groups:
+            opportunity = group[0]
+            source_paper = papers_by_id.get(
+                opportunity["paper_id"], {"title": opportunity["paper_id"]}
+            )
+            matched_names = [
+                by_id.get(item["contribution_id"], {}).get(
+                    "name", item["contribution_id"]
+                )
+                for item in group
+            ]
+            summary_rows.append({
+                "Match": "Strong" if any(
+                    item["classification"] == "strong_citation_opportunity"
+                    for item in group
+                ) else "Potential",
+                "Paper": source_paper.get("title", opportunity["paper_id"]),
+                "Your works": ", ".join(dict.fromkeys(matched_names)),
+                "Confidence": f"{max(item['confidence'] for item in group):.0%}",
+                "Status": ", ".join(dict.fromkeys(
+                    item["status"].replace("_", " ").title() for item in group
+                )),
+            })
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+    else:
+        paper_groups = []
+    if not displayed:
+        st.info(empty_message)
+    for group in paper_groups:
+        opportunity = group[0]
+        source_paper = papers_by_id.get(opportunity["paper_id"], {"title": opportunity["paper_id"], "authors": []})
+        match_label = "Strong" if any(
+            item["classification"] == "strong_citation_opportunity"
+            for item in group
+        ) else "Potential"
+        panel_title = (
+            f"{match_label}: {source_paper.get('title')} | "
+            f"{len(group)} relevant work{'s' if len(group) != 1 else ''}"
+        )
+        with st.expander(panel_title, expanded=match_label == "Strong"):
+            st.markdown(f"[{source_paper.get('title')}](https://arxiv.org/abs/{opportunity['paper_id']})")
+            st.metric("Highest confidence", f"{max(item['confidence'] for item in group):.0%}")
+            contribution_tabs = st.tabs([
+                by_id.get(item["contribution_id"], {}).get(
+                    "name", item["contribution_id"]
+                )
+                for item in group
+            ])
+            for contribution_tab, item in zip(contribution_tabs, group):
+                matched = by_id.get(
+                    item["contribution_id"],
+                    {"name": item["contribution_id"], "canonical_citations": []},
+                )
+                with contribution_tab:
+                    citations = matched.get("canonical_citations", [])
+                    if citations:
+                        for citation in citations:
+                            citation_text = (
+                                citation.get("preferred_text")
+                                or citation.get("title", "Not published")
+                            )
+                            if citation.get("url"):
+                                st.markdown(
+                                    f"**Preferred citation:** "
+                                    f"[{citation_text}]({citation['url']})"
+                                )
+                            else:
+                                st.markdown(f"**Preferred citation:** {citation_text}")
+                    else:
+                        st.markdown("**Preferred citation:** Not published")
+                    st.markdown("**Paper evidence**")
+                    for evidence in item.get("evidence", []):
+                        st.caption(evidence["locator"])
+                        st.info(evidence["quote"])
+                    st.markdown(f"**Rationale:** {item['rationale']}")
+                    st.markdown(
+                        f"**Strongest counterargument:** {item['counterargument']}"
+                    )
+                    with st.expander("Reference check"):
+                        st.json(item["reference_check"])
+                    if item["status"] in {"proposed", "needs_review"}:
+                        reject_col, review_col = st.columns(2)
+                        if reject_col.button(
+                            "Not relevant",
+                            key=f"reject_citation_{item['opportunity_id']}",
+                        ):
+                            citation_opportunity_store.update_status(
+                                item["opportunity_id"], "not_relevant"
+                            )
+                            st.rerun()
+                        if review_col.button(
+                            "Needs review",
+                            key=f"review_citation_{item['opportunity_id']}",
+                        ):
+                            citation_opportunity_store.update_status(
+                                item["opportunity_id"], "needs_review"
+                            )
+                            st.rerun()
+                    st.caption(
+                        f"Status: {item['status']} | export: "
+                        f"{item.get('export_status') or 'not exported'}"
+                    )
+                    if item.get("export_error"):
+                        st.warning(item["export_error"])
+            with st.expander("Works and evidence", expanded=True):
+                label_by_id = {
+                    item["id"]: item.get("name", item["id"])
+                    for item in contributions
+                }
+                id_by_label = {label: item_id for item_id, label in label_by_id.items()}
+                existing_by_contribution = {
+                    item["contribution_id"]: item for item in group
+                }
+                selected_labels = st.multiselect(
+                    "Relevant works",
+                    list(id_by_label),
+                    default=[
+                        label_by_id[item["contribution_id"]]
+                        for item in group
+                        if item["contribution_id"] in label_by_id
+                    ],
+                    key=f"recreate_works_{opportunity['paper_id']}",
+                )
+                edited_entries = []
+                if selected_labels:
+                    edit_tabs = st.tabs(selected_labels)
+                    for edit_tab, selected_label in zip(edit_tabs, selected_labels):
+                        contribution_id = id_by_label[selected_label]
+                        existing = existing_by_contribution.get(contribution_id, {})
+                        existing_evidence = existing.get("evidence", [{}])[0]
+                        with edit_tab:
+                            edited_strength = st.selectbox(
+                                "Match strength",
+                                ["Strong citation opportunity", "Potentially useful"],
+                                index=(
+                                    0 if existing.get("classification")
+                                    == "strong_citation_opportunity" else 1
+                                ),
+                                key=f"recreate_strength_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                            edited_confidence = st.slider(
+                                "Confidence", 0.0, 1.0,
+                                value=float(existing.get("confidence", 0.8)), step=0.05,
+                                key=f"recreate_confidence_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                            edited_rationale = st.text_area(
+                                "Scientific connection",
+                                value=existing.get("rationale", ""),
+                                key=f"recreate_rationale_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                            edited_counterargument = st.text_area(
+                                "Strongest counterargument",
+                                value=existing.get(
+                                    "counterargument",
+                                    "The authors may have made a reasonable independent methodological choice.",
+                                ),
+                                key=f"recreate_counterargument_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                            edited_locator = st.text_input(
+                                "Evidence location",
+                                value=existing_evidence.get("locator", ""),
+                                key=f"recreate_locator_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                            edited_quote = st.text_area(
+                                "Exact evidence quote from the paper",
+                                value=existing_evidence.get("quote", ""),
+                                key=f"recreate_quote_{opportunity['paper_id']}_{contribution_id}",
+                            )
+                        edited_entries.append({
+                            "contribution": by_id[contribution_id],
+                            "classification": (
+                                "strong_citation_opportunity"
+                                if edited_strength == "Strong citation opportunity"
+                                else "potentially_useful"
+                            ),
+                            "confidence": edited_confidence,
+                            "rationale": edited_rationale,
+                            "counterargument": edited_counterargument,
+                            "evidence_locator": edited_locator,
+                            "evidence_quote": edited_quote,
+                        })
+                if st.button(
+                    "Replace bundle with these edits",
+                    key=f"recreate_bundle_{opportunity['paper_id']}",
+                    disabled=not selected_labels,
+                ):
+                    try:
+                        with st.spinner("Validating edited evidence against the paper..."):
+                            full_text = _get_paper_text(opportunity["paper_id"], source_paper)
+                        evidence_source = "\n\n".join(
+                            part for part in (
+                                full_text, str(source_paper.get("abstract", ""))
+                            ) if part.strip()
+                        )
+                        for entry in edited_entries:
+                            packet = citation_evidence.build_evidence_packet(
+                                opportunity["paper_id"], full_text,
+                                entry["contribution"],
+                                owner_name_variants=catalogue.get(
+                                    "owner_name_variants", [catalogue["owner"]]
+                                ),
+                                corpus_chunks=research_db.documents_for_owner(
+                                    "paper_content", opportunity["paper_id"]
+                                ),
+                            )
+                            entry["reference_check"] = packet["reference_check"]
+                        citation_opportunities.recreate_manual_bundle(
+                            paper_id=opportunity["paper_id"],
+                            entries=edited_entries,
+                            catalogue_version=catalogue["schema_version"],
+                            paper_text=evidence_source,
+                        )
+                    except Exception as exc:
+                        st.error(f"Could not recreate bundle: {exc}")
+                    else:
+                        st.success("Bundle replaced. Review it, then send the combined email.")
+                        st.rerun()
+            contact = source_paper.get("corresponding_author")
+            if isinstance(contact, dict) and contact.get("email"):
+                st.success(
+                    f"Public corresponding-author contact: {citation_contacts.display_name(contact)} "
+                    f"({contact['email']})"
+                )
+                st.link_button(
+                    "Open mail client",
+                    citation_contacts.mailto_url(contact, opportunity["paper_id"]),
+                )
+            else:
+                st.caption("A public corresponding-author email will be looked up from the arXiv source when you continue.")
+            tone_note = st.text_input(
+                "Drafting instructions",
+                placeholder="For example: keep it brief; mention that I also develop Bilby",
+                key=f"citation_tone_{opportunity['paper_id']}",
+            )
+            st.caption(
+                "Drafting instructions control how selected works are discussed. "
+                "To cite another publication, add it under Works and evidence first."
+            )
+            can_export = any(
+                item["status"] in {"proposed", "needs_review"} for item in group
+            )
+            is_dismissed = all(item["status"] == "dismissed" for item in group)
+            dismiss_col, export_col = st.columns([1, 2])
+            if is_dismissed and dismiss_col.button(
+                "Restore",
+                key=f"restore_citation_group_{opportunity['paper_id']}",
+                help="Return this paper and all of its matches to the review queue.",
+            ):
+                citation_opportunity_store.restore_dismissed_for_paper(
+                    opportunity["paper_id"]
+                )
+                st.rerun()
+            elif not is_dismissed and dismiss_col.button(
+                "Dismiss",
+                key=f"dismiss_citation_group_{opportunity['paper_id']}",
+                help="Hide this paper even though its citation matches may be relevant.",
+            ):
+                citation_opportunity_store.dismiss_for_paper(opportunity["paper_id"])
+                st.rerun()
+            if export_col.button(
+                (
+                    "Send one combined email to Email drafts →"
+                    if orchestrator_endpoint else "Email drafts not configured"
+                ),
+                key=f"confirm_citation_group_{opportunity['paper_id']}",
+                disabled=is_dismissed or not can_export or not orchestrator_endpoint,
+                type="primary",
+            ):
+                try:
+                    if not contact:
+                        with st.spinner("Looking for a public corresponding-author email in the arXiv source..."):
+                            try:
+                                contact = citation_contacts.find_public_contact(
+                                    _get_paper_text(opportunity["paper_id"], source_paper),
+                                    opportunity["paper_id"],
+                                )
+                            except Exception:
+                                contact = None
+                        if contact:
+                            source_paper = {**source_paper, "corresponding_author": contact}
+                            paper_store.update_paper(
+                                opportunity["paper_id"], {"corresponding_author": contact}
+                            )
+                    confirmed = []
+                    for item in group:
+                        citation_opportunity_store.update_status(
+                            item["opportunity_id"], "confirmed"
+                        )
+                        confirmed.append({**item, "status": "confirmed"})
+                    citation_opportunities.export_bundle(
+                        confirmed,
+                        source_paper,
+                        by_id,
+                        tone_note=tone_note,
+                    )
+                except Exception as exc:
+                    st.error(str(exc))
+                else:
+                    contact_note = (
+                        f" Public contact found: {citation_contacts.display_name(contact)} "
+                        f"<{contact['email']}>."
+                        if contact else
+                        " No public email was found, so you can enter one manually later."
+                    )
+                    st.success(f"Added to Email drafts.{contact_note}")
+                    st.link_button("Continue in Email drafts →", orchestrator_ui)
+
+
 def main():
+    job_queue.start(recover=True)
     init_session_state()
     _auto_sync_papers_from_store()
     render_header()
+
+    workspaces = {
+        "Inbox": render_inbox,
+        "Semantic Search": render_vector_search,
+        "Knowledge Graph": render_knowledge_graph,
+        "Library": render_papers_list,
+        "Assistant": render_assistant,
+        "Lit Review": render_lit_review_builder,
+        "Projects": render_projects,
+        "Paper Ideas": render_paper_ideas,
+        "Grant Ideas": render_grant_ideas,
+        "Library Health": render_research_ops,
+        "Schedule": render_schedule,
+        "Profile": render_profile,
+    }
+    if citation_discovery.enabled():
+        workspaces["Citation Opportunities"] = render_citation_opportunities
+    st.sidebar.header("Workspace")
+    selected_workspace = st.sidebar.selectbox(
+        "View",
+        list(workspaces),
+        key="workspace_view",
+        label_visibility="collapsed",
+    )
+    st.sidebar.divider()
 
     query, author, categories, max_results, date_from = render_sidebar()
 
     if query is not None:  # None means Search button was not pressed
         render_search_results(query, author, categories, max_results, date_from)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
-        "Inbox", "Semantic Search", "Knowledge Graph", "Library",
-        "Assistant", "Lit Review", "Projects", "Paper Ideas", "Grant Ideas",
-        "Research Ops", "Schedule", "Profile",
-    ])
-
-    with tab1:
-        render_inbox()
-    with tab2:
-        render_vector_search()
-    with tab3:
-        render_knowledge_graph()
-    with tab4:
-        render_papers_list()
-    with tab5:
-        render_assistant()
-    with tab6:
-        render_lit_review_builder()
-    with tab7:
-        render_projects()
-    with tab8:
-        render_paper_ideas()
-    with tab9:
-        render_grant_ideas()
-    with tab10:
-        render_research_ops()
-    with tab11:
-        render_schedule()
-    with tab12:
-        render_profile()
+    workspaces[selected_workspace]()
 
 
 if __name__ == "__main__":

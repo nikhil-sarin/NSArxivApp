@@ -6,7 +6,9 @@ Usage:
 """
 
 import argparse
-from datetime import datetime, timedelta, timezone
+import json
+import os
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -14,14 +16,64 @@ from dotenv import load_dotenv
 from app.arxiv_announcements import fetch_papers as fetch_announcement_papers
 from app.arxiv_announcements import paper_to_metadata
 from app.arxiv_client import ArxivClient
-from app import paper_store
+from app import paper_store, research_db
 from app.paper_text import get_paper_text
 from app.pdf_extractor import PDFExtractor
 from app.summarizer import PaperSummarizer
-from app.summary_workflow import summarize_with_fallback
+from app.summary_workflow import summarize_with_provenance
 from app.vector_db import PaperVectorDB
+from app import citation_discovery, orchestrator_export
+from app import contribution_catalogue, idea_store, relevance, researcher_profile
+
+
+TRACKING_RELEVANCE_THRESHOLD = 50.0
 
 MAX_EMPTY_DATE_LOOKBACK_DAYS = 7
+FETCH_WATERMARK_KEY = "new_submissions_last_successful_date"
+
+
+def _load_fetch_watermark() -> date | None:
+    db = research_db.connect()
+    try:
+        row = db.execute(
+            "SELECT value_json FROM settings WHERE key=?", (FETCH_WATERMARK_KEY,)
+        ).fetchone()
+    finally:
+        db.close()
+    if row is None:
+        return None
+    try:
+        return date.fromisoformat(str(json.loads(row["value_json"])))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _save_fetch_watermark(processed_date: date) -> None:
+    current = _load_fetch_watermark()
+    if current is not None and current >= processed_date:
+        return
+    with research_db.transaction() as db:
+        db.execute(
+            "INSERT INTO settings(key, value_json, updated_at) VALUES(?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, "
+            "updated_at=excluded.updated_at",
+            (
+                FETCH_WATERMARK_KEY,
+                json.dumps(processed_date.isoformat()),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+
+def _pending_announcement_dates(requested_date: date) -> list[date]:
+    """Include every calendar day after the last fully successful scheduled run."""
+    watermark = _load_fetch_watermark()
+    if watermark is None or watermark >= requested_date:
+        return [requested_date]
+    return [
+        watermark + timedelta(days=offset)
+        for offset in range(1, (requested_date - watermark).days + 1)
+    ]
 
 
 def _save_new_papers(
@@ -32,6 +84,22 @@ def _save_new_papers(
     summarizer: PaperSummarizer,
     vdb: PaperVectorDB,
 ) -> int:
+    all_triage = paper_store.load_triage(status=None, limit=10000)
+    positive = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == 1]
+    negative = [paper for paper in all_triage if paper.get("triage", {}).get("feedback") == -1]
+    ideas = idea_store.load_ideas("paper") + idea_store.load_ideas("grant")
+    contributions = contribution_catalogue.enabled_contributions()
+    scored = relevance.score_tracking_papers(
+        papers,
+        profile=researcher_profile.load(),
+        ideas=ideas,
+        contributions=contributions,
+        positive_papers=positive,
+        negative_papers=negative,
+        encode=vdb.embedder.encode,
+    )
+    scores_by_id = {paper["arxiv_id"]: paper for paper in scored}
+    threshold = float(os.getenv("TRACKING_RELEVANCE_THRESHOLD", TRACKING_RELEVANCE_THRESHOLD))
     new_count = 0
     for metadata in papers:
         pid = metadata["arxiv_id"]
@@ -40,6 +108,14 @@ def _save_new_papers(
             continue
 
         print(f"  [new]  {pid}: {metadata['title'][:70]}")
+        tracking = scores_by_id.get(pid, {})
+        relevance_score = float(tracking.get("relevance_score", 100.0))
+        relevance_reason = str(tracking.get("relevance_reason", ""))
+        reading_candidate = relevance_score >= threshold
+        print(
+            f"  [tracking] {'inbox' if reading_candidate else 'monitor-only'} "
+            f"score={relevance_score:.1f}: {relevance_reason}"
+        )
         try:
             text = get_paper_text(
                 pid,
@@ -52,12 +128,38 @@ def _save_new_papers(
             print(f"  [warn] full text unavailable for {pid}: {exc}")
             text = ""
 
-        summary = summarize_with_fallback(summarizer, text, metadata.get("abstract", ""))
+        if reading_candidate:
+            summary, provenance = summarize_with_provenance(
+                summarizer,
+                text,
+                metadata.get("abstract", ""),
+            )
+        else:
+            summary = str(metadata.get("abstract", "")).strip() or text[:2000].strip()
+            provenance = {
+                "status": "source_abstract",
+                "provider": "none",
+                "model": "none",
+                "input_source": "abstract" if metadata.get("abstract") else "full_text_excerpt",
+                "detailed": False,
+                "quality_issues": [],
+                "fallback_reason": "monitor_only",
+                "workflow_version": "summary-v2",
+            }
         if not summary.strip():
             print(f"  [skip] {pid} had no readable full text or abstract.")
             continue
 
-        paper_store.save_paper(pid, metadata, summary)
+        metadata["tracking_relevance_score"] = relevance_score
+        metadata["tracking_relevance_reason"] = relevance_reason
+        metadata["summary_provenance"] = provenance
+        paper_store.save_paper(pid, metadata, summary, summary_provenance=provenance)
+        paper_store.update_triage(
+            pid,
+            status="inbox" if reading_candidate else "irrelevant",
+            relevance_score=relevance_score,
+            relevance_reason=relevance_reason,
+        )
         chroma_meta = {
             key: value for key, value in {
                 **metadata,
@@ -67,12 +169,34 @@ def _save_new_papers(
             }.items()
             if value is not None and not isinstance(value, list)
         }
-        vdb.add_paper(
-            paper_id=pid,
-            title=metadata["title"],
-            summary=summary,
-            metadata=chroma_meta,
-        )
+        if reading_candidate:
+            try:
+                vdb.add_paper(
+                    paper_id=pid,
+                    title=metadata["title"],
+                    summary=summary,
+                    metadata=chroma_meta,
+                )
+            except Exception as exc:
+                print(f"  [warn] vector indexing failed for {pid}: {exc}")
+        if citation_discovery.enabled():
+            try:
+                discovery = citation_discovery.discover_paper({**metadata, "summary": summary}, text)
+                print(
+                    f"  [citations] checked={discovery['checked']} "
+                    f"judged={discovery['model_judgements']} reviewable={discovery['reviewable']}"
+                )
+            except Exception as exc:
+                print(f"  [warn] citation discovery failed for {pid}: {exc}")
+        if reading_candidate and orchestrator_export.enabled():
+            try:
+                exported = orchestrator_export.export_relevant_paper(metadata, summary)
+                print(
+                    f"  [orchestrator] exported relevant paper {pid} "
+                    f"as {exported['artifact_id']}"
+                )
+            except Exception as exc:
+                print(f"  [warn] LocalOrchestrator paper export failed for {pid}: {exc}")
         new_count += 1
     return new_count
 
@@ -104,6 +228,9 @@ def run_query_search(query: str, categories: list[str], max_results: int, days_b
         summarizer=summarizer,
         vdb=vdb,
     )
+    moved = paper_store.move_stale_inbox_to_read_later()
+    if moved:
+        print(f"[inbox] moved {moved} papers older than seven days to Read later.")
     print(f"[{datetime.now()}] Done. Added {new_count} new papers.")
 
 
@@ -127,50 +254,91 @@ def _fetch_latest_nonempty_submissions(
     return start_date, {category: [] for category in categories}
 
 
-def run_new_submissions(categories: list[str], max_results: int, days_back: int = 1):
+def run_new_submissions(
+    categories: list[str],
+    max_results: int,
+    days_back: int = 1,
+    announcement_date: date | None = None,
+):
     load_dotenv()
     if not categories:
         raise ValueError("new-submissions mode requires at least one category")
 
-    requested_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).date()
+    requested_date = announcement_date or (
+        datetime.now(timezone.utc) - timedelta(days=days_back)
+    ).date()
     client = ArxivClient()
     extractor = PDFExtractor()
     summarizer = PaperSummarizer()
     vdb = PaperVectorDB()
 
-    print(f"[{datetime.now()}] Fetching new submissions: cats={categories} requested_announcement_date={requested_date}")
+    pending_dates = [requested_date] if announcement_date else _pending_announcement_dates(requested_date)
+    total_new = 0
+    for pending_date in pending_dates:
+        print(
+            f"[{datetime.now()}] Fetching new submissions: cats={categories} "
+            f"requested_announcement_date={pending_date}"
+        )
+        try:
+            if len(pending_dates) > 1 or announcement_date:
+                target_date = pending_date
+                papers_by_category = {
+                    category: fetch_announcement_papers(category, pending_date)
+                    for category in categories
+                }
+            else:
+                target_date, papers_by_category = _fetch_latest_nonempty_submissions(
+                    categories, pending_date
+                )
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to fetch announcement date {pending_date}: {exc}"
+            ) from exc
 
-    try:
-        target_date, papers_by_category = _fetch_latest_nonempty_submissions(categories, requested_date)
-    except Exception as exc:
-        raise RuntimeError(f"failed to resolve latest non-empty announcement date: {exc}") from exc
+        if target_date != pending_date:
+            print(
+                f"  [info] no new submissions on {pending_date}; "
+                f"using latest non-empty announcement date {target_date}"
+            )
 
-    if target_date != requested_date:
-        print(f"  [info] no new submissions on {requested_date}; using latest non-empty announcement date {target_date}")
+        seen_ids: set[str] = set()
+        metadata_to_save: list[dict] = []
+        for category in categories:
+            papers = papers_by_category.get(category, [])
+            print(f"  [info] {category}: {len(papers)} announced papers")
+            for paper in papers:
+                if paper.arxiv_id in seen_ids:
+                    continue
+                seen_ids.add(paper.arxiv_id)
+                metadata_to_save.append(paper_to_metadata(paper))
 
-    seen_ids: set[str] = set()
-    metadata_to_save: list[dict] = []
-    for category in categories:
-        papers = papers_by_category.get(category, [])
-        print(f"  [info] {category}: {len(papers)} announced papers")
-        for paper in papers:
-            if paper.arxiv_id in seen_ids:
-                continue
-            seen_ids.add(paper.arxiv_id)
-            metadata_to_save.append(paper_to_metadata(paper))
+        if max_results > 0:
+            metadata_to_save = metadata_to_save[:max_results]
 
-    if max_results > 0:
-        metadata_to_save = metadata_to_save[:max_results]
-
-    print(f"Found {len(metadata_to_save)} unique announcement-day papers.")
-    new_count = _save_new_papers(
-        metadata_to_save,
-        client=client,
-        extractor=extractor,
-        summarizer=summarizer,
-        vdb=vdb,
+        print(f"Found {len(metadata_to_save)} unique announcement-day papers.")
+        new_count = _save_new_papers(
+            metadata_to_save,
+            client=client,
+            extractor=extractor,
+            summarizer=summarizer,
+            vdb=vdb,
+        )
+        total_new += new_count
+        _save_fetch_watermark(pending_date)
+        print(f"[{datetime.now()}] Done. Added {new_count} new papers.")
+    moved = paper_store.move_stale_inbox_to_read_later()
+    if moved:
+        print(f"[inbox] moved {moved} papers older than seven days to Read later.")
+    eligibility = citation_discovery.refresh_active_eligibility(client)
+    print(
+        "[citations] refreshed active eligibility: "
+        f"papers={eligibility['papers_checked']} "
+        f"removed={eligibility['opportunities_removed']} "
+        f"published={eligibility['removed_published']} "
+        f"expired={eligibility['removed_expired']} "
+        f"failed={eligibility['failed']}"
     )
-    print(f"[{datetime.now()}] Done. Added {new_count} new papers.")
+    return total_new
 
 
 if __name__ == "__main__":
@@ -190,6 +358,11 @@ if __name__ == "__main__":
         default=1,
         help="In query-search mode, look back N days; in new-submissions mode, start from the UTC announcement day N days ago and back up to the latest non-empty date.",
     )
+    parser.add_argument(
+        "--announcement-date",
+        type=date.fromisoformat,
+        help="Fetch one exact UTC announcement date (YYYY-MM-DD), primarily for repair.",
+    )
     args = parser.parse_args()
 
     if args.mode == "new-submissions":
@@ -197,6 +370,7 @@ if __name__ == "__main__":
             categories=args.categories,
             max_results=args.max_results,
             days_back=args.days_back,
+            announcement_date=args.announcement_date,
         )
     else:
         run_query_search(

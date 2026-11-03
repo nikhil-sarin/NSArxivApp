@@ -2,6 +2,7 @@
 
 import os
 import hashlib
+import json
 import re
 from pathlib import Path
 import chromadb
@@ -99,13 +100,28 @@ class PaperVectorDB:
             text = f"{title} {summary}"
             vector = self.embedder.encode(text).tolist()
 
-        # Add to collection
-        self.collection.add(
+        # Paper records can contain nested provenance and notes. Chroma metadata
+        # is flat, so normalize every caller at this storage boundary.
+        self.collection.upsert(
             ids=[paper_id],
             embeddings=[vector],
             documents=[summary],
-            metadatas=[metadata],
+            metadatas=[self._normalize_metadata(metadata)],
         )
+
+    @staticmethod
+    def _normalize_metadata(metadata: Dict) -> Dict:
+        normalized = {}
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                normalized[str(key)] = value
+            elif isinstance(value, (dict, list, tuple)):
+                normalized[str(key)] = json.dumps(value, default=str, sort_keys=True)
+            else:
+                normalized[str(key)] = str(value)
+        return normalized
 
     def search(self, query: str, top_k: int = 10) -> List[Dict]:
         """
@@ -145,11 +161,7 @@ class PaperVectorDB:
 
     def upsert_document(self, document_id: str, text: str, metadata: Dict):
         """Embed and store one attributable research document."""
-        safe_metadata = {
-            key: value if isinstance(value, (str, int, float, bool)) else str(value)
-            for key, value in metadata.items()
-            if value is not None
-        }
+        safe_metadata = self._normalize_metadata(metadata)
         vector = self.embedder.encode(text).tolist()
         self.document_collection.upsert(
             ids=[document_id],
