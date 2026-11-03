@@ -210,6 +210,38 @@ def fetch_record(arxiv_id: str) -> AnnouncementPaper | None:
     return parse_get_record(response.content)
 
 
+def fetch_record_from_abs_page(
+    arxiv_id: str,
+    *,
+    list_name: str,
+    target_date: date,
+) -> AnnouncementPaper:
+    """Fetch metadata from the public abstract page when OAI-PMH is unavailable."""
+    from app.arxiv_client import ArxivClient
+
+    client = ArxivClient()
+    result = client.get_result_by_id(arxiv_id)
+    metadata = client.get_paper_metadata(result)
+    categories = list(metadata.get("categories", []))
+    if list_name not in categories:
+        categories.insert(0, list_name)
+    v1_date = result.published.date().isoformat()
+    return AnnouncementPaper(
+        arxiv_id=arxiv_id,
+        title=str(metadata.get("title", arxiv_id)),
+        authors=list(metadata.get("authors", [])),
+        abstract=str(metadata.get("abstract", "")),
+        primary_category=list_name,
+        categories=categories,
+        announced_date=target_date.isoformat(),
+        v1_date=v1_date,
+        abs_url=f"https://arxiv.org/abs/{arxiv_id}",
+        pdf_url=str(metadata.get("pdf_url") or f"https://arxiv.org/pdf/{arxiv_id}"),
+        comment=str(metadata.get("comment") or ""),
+        journal_ref=str(metadata.get("journal_ref") or ""),
+    )
+
+
 def fetch_rss_papers(list_name: str, target_date: date) -> list[AnnouncementPaper] | None:
     """Fetch the latest RSS papers if the feed date matches target_date."""
     response = _get_with_retry(RSS_URL.format(list_name=list_name))
@@ -224,10 +256,26 @@ def fetch_via_catchup(list_name: str, target_date: date) -> list[AnnouncementPap
     """Backfill older dates via catchup + OAI."""
     ids = fetch_catchup_ids(list_name, target_date)
     papers: list[AnnouncementPaper] = []
+    oai_available = True
     for index, arxiv_id in enumerate(ids):
         if index > 0:
             time.sleep(RATE_LIMIT_SECONDS)
-        paper = fetch_record(arxiv_id)
+        if oai_available:
+            try:
+                paper = fetch_record(arxiv_id)
+            except requests.RequestException as exc:
+                oai_available = False
+                print(
+                    f"  [warn] OAI-PMH unavailable for {arxiv_id}; "
+                    f"using abstract-page metadata for this batch: {exc}"
+                )
+                paper = fetch_record_from_abs_page(
+                    arxiv_id, list_name=list_name, target_date=target_date
+                )
+        else:
+            paper = fetch_record_from_abs_page(
+                arxiv_id, list_name=list_name, target_date=target_date
+            )
         if paper is not None:
             papers.append(paper)
     return papers

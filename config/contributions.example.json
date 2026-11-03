@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.4",
+  "schema_version": "1.5",
   "owner": "Nikhil Sarin",
   "owner_name_variants": ["N. Sarin", "N Sarin", "Nikhil Sarin"],
   "contributions": [
@@ -19,6 +19,15 @@
       "strong_signals": ["bilby transient light curve inference", "bayesian electromagnetic transient modelling", "simulate and fit electromagnetic transients", "bayesian physical transient light curve fitting"],
       "weak_signals": ["transient parameter inference", "magnetar powered transient modelling", "kilonova light curve modelling", "supernova light curve parameter estimation", "afterglow parameter inference", "tidal disruption event light curve fitting", "nested sampling transient model comparison", "multi band transient inference"],
       "discovery_rules": [{
+        "name": "VegasAfterglow uses Bilby for GRB afterglow inference",
+        "strength": "strong",
+        "all": [
+          ["vegasafterglow", "vegas afterglow"],
+          ["bilby"],
+          ["afterglow", "gamma ray burst", "grb"]
+        ],
+        "preferred_evidence": ["vegasafterglow", "bilby", "bayesian inference"]
+      }, {
         "name": "Bilby used directly for electromagnetic-transient inference",
         "strength": "strong",
         "all": [
@@ -64,7 +73,7 @@
       ],
       "exclusions": ["bilby gravitational wave inference", "pulsar timing inference", "transient localization analysis", "particle transport simulation", "periodogram variability analysis"],
       "backfill_prefilter_rules": [{
-        "all": [["bilby", "mosfit", "sncosmo", "nmma", "afterglowpy"]]
+        "all": [["bilby", "vegasafterglow", "vegas afterglow", "mosfit", "sncosmo", "nmma", "afterglowpy"]]
       }, {
         "all": [
           ["bayesian", "inference", "parameter estimation", "parameter inference", "fitting", "fit", "mcmc", "nested sampling", "dynesty", "model comparison", "forward model", "likelihood"],
